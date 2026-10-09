@@ -1,0 +1,78 @@
+# =============================================================================
+#  R E P S   ·   ws-net
+# =============================================================================
+[package]
+name    = "ws-net"
+version = "0.1.0"
+
+# Minimum Supported Rust Version (MSRV)
+rust-version = "1.85"
+edition = "2024"
+
+# License
+license = "Apache-2.0 OR MIT"
+
+# Readme
+readme = "README.md"
+
+# Description
+description = "WebSocket (RFC 6455) protocol engine: handshake, framing, masking, fragmentation, ping/pong, close, with budgets and no dependencies."
+
+# Keywords (5 max)
+keywords = ["websocket", "rfc6455", "protocol", "sans-io", "network"]
+
+# Categories
+categories = ["network-programming", "web-programming", "no-std"]
+
+# Links
+homepage      = "https://github.com/jamesgober/ws-net"
+repository    = "https://github.com/jamesgober/ws-net"
+documentation = "https://docs.rs/ws-net"
+
+# Authors
+authors = ["James Gober <me@jamesgober.com>"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+name = "ws_net"
+path = "src/lib.rs"
+
+
+# FEATURE FLAGS
+# #################################
+[features]
+default = ["std"]
+std = []
+
+
+# DEPENDENCIES
+# #################################
+[dependencies]
+# First-party -lang dependencies are wired at v0.2.0, when first used.
+
+
+# DEV DEPENDENCIES
+# #################################
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest  = "1"
+
+
+# BENCHMARKS
+# #################################
+[[bench]]
+name    = "bench"
+harness = false
+
+
+# RELEASE PROFILE
+# #################################
+[profile.release]
+opt-level     = 3
+lto           = "fat"
+codegen-units = 1
+panic         = "abort"
+strip         = "symbols"

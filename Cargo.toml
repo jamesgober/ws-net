@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "ws-net"
-version = "0.1.0"
+version = "0.2.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -16,7 +16,7 @@ license = "Apache-2.0 OR MIT"
 readme = "README.md"
 
 # Description
-description = "WebSocket (RFC 6455) protocol engine: handshake, framing, masking, fragmentation, ping/pong, close, with budgets and no dependencies."
+description = "Sans-IO WebSocket (RFC 6455) engine: opening handshake, framing, masking, fragmentation with incremental UTF-8 validation, ping/pong, close handshake, size budgets, no dependencies."
 
 # Keywords (5 max)
 keywords = ["websocket", "rfc6455", "protocol", "sans-io", "network"]
@@ -45,13 +45,17 @@ path = "src/lib.rs"
 # #################################
 [features]
 default = ["std"]
+# OS-seeded masking keys and handshake nonces (Connection::client,
+# ClientHandshake::new). Without it the crate is no_std and needs only
+# `alloc`; clients then take a caller-supplied seed.
 std = []
 
 
 # DEPENDENCIES
 # #################################
 [dependencies]
-# First-party -lang dependencies are wired at v0.2.0, when first used.
+# None. SHA-1 and base64 for the handshake are small private modules until
+# the owner's crypto and codec libraries are published (dev/ROADMAP.md).
 
 
 # DEV DEPENDENCIES
@@ -66,6 +70,17 @@ proptest  = "1"
 [[bench]]
 name    = "bench"
 harness = false
+
+
+# EXAMPLES
+# #################################
+[[example]]
+name              = "sans_io"
+required-features = ["std"]
+
+[[example]]
+name              = "echo_server"
+required-features = ["std"]
 
 
 # RELEASE PROFILE

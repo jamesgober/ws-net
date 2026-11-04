@@ -18,10 +18,7 @@ use alloc::{
 };
 use core::fmt;
 
-use parse_net::{
-    list::contains_token,
-    text::{is_token, trim_ows},
-};
+use parse_net::{list::contains_token, text::is_token};
 
 use crate::{
     base64,
@@ -160,7 +157,8 @@ pub struct ServerHandshake {
 impl fmt::Debug for ServerHandshake {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ServerHandshake")
-            .field("target", &self.target())
+            // The path only: a query string can carry a token.
+            .field("path", &self.target().split('?').next().unwrap_or(""))
             .field("host", &self.host())
             .field("origin", &self.origin())
             .field("protocols", &self.protocols().collect::<Vec<_>>())
@@ -295,7 +293,12 @@ impl ServerHandshake {
         if method != "GET" {
             return Err(HandshakeError::NotGet);
         }
-        if !is_visible(target.as_bytes()) {
+        // Origin-form only: a resource name starting with `/` (RFC 6455
+        // section 4.1). An absolute-form target would carry an authority
+        // that HTTP says to use instead of `Host`, so the Host policy would
+        // check a value the target overrides; `*` and authority-form are
+        // not WebSocket requests.
+        if !target.starts_with('/') || target.starts_with("//") || !is_visible(target.as_bytes()) {
             return Err(HandshakeError::MalformedHead);
         }
         let mut upgrade = false;
@@ -309,7 +312,7 @@ impl ServerHandshake {
         let mut protocols: [&[u8]; Self::MAX_PROTOCOLS] = [&[]; Self::MAX_PROTOCOLS];
         let mut protocol_count = 0usize;
         let mut extensions: [&[u8]; extension::MAX_OFFERS] = [&[]; extension::MAX_OFFERS];
-        let mut extension_fields = 0usize;
+        let mut extension_count = 0usize;
         let mut offers = 0usize;
         for (name, value) in headers {
             if name.eq_ignore_ascii_case("host") {
@@ -331,12 +334,16 @@ impl ServerHandshake {
             } else if name.eq_ignore_ascii_case("sec-websocket-extensions") {
                 // Each field with an offer holds at least one, so at most
                 // MAX_OFFERS fields are kept.
-                let n = extension::validate(value, extension::MAX_OFFERS - offers)?;
-                if n > 0 {
-                    offers += n;
-                    if let Some(slot) = extensions.get_mut(extension_fields) {
-                        *slot = trim_ows(value);
-                        extension_fields += 1;
+                offers += extension::validate(value, extension::MAX_OFFERS - offers)?;
+                // Each element is one offer (validated just now), so at
+                // most MAX_OFFERS are kept; empty elements are dropped so
+                // the stored list re-parses whatever the input's spacing.
+                if let Ok(list) = parse_net::list(value) {
+                    for element in list.iter() {
+                        if let Some(slot) = extensions.get_mut(extension_count) {
+                            *slot = element;
+                            extension_count += 1;
+                        }
                     }
                 }
             } else if name.eq_ignore_ascii_case("transfer-encoding") {
@@ -388,7 +395,7 @@ impl ServerHandshake {
             return Err(HandshakeError::InvalidOrigin);
         }
         let protocols = protocols.get(..protocol_count).unwrap_or(&[]);
-        let extensions = extensions.get(..extension_fields).unwrap_or(&[]);
+        let extensions = extensions.get(..extension_count).unwrap_or(&[]);
         let origin = if origins == 1 { origin } else { &[] };
         let joined = |parts: &[&[u8]], sep: usize| {
             parts.iter().map(|p| p.len()).sum::<usize>() + sep * parts.len().saturating_sub(1)
@@ -789,7 +796,7 @@ impl<'s> Iterator for ResponseFields<'s> {
 /// assert_eq!(client.verify_head(&response)?, Some((None, response.len())));
 /// # Ok::<(), ws_net::HandshakeError>(())
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ClientHandshake {
     key: [u8; 24],
     expected: AcceptKey,
@@ -1234,6 +1241,20 @@ impl Verified<'_> {
     }
 }
 
+/// Header names only: extra headers carry credentials (`Authorization`,
+/// `Cookie`). The key is public on the wire.
+impl fmt::Debug for ClientHandshake {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(n, _)| n.as_str()).collect();
+        f.debug_struct("ClientHandshake")
+            .field("key", &self.key())
+            .field("protocols", &self.protocols)
+            .field("origin", &self.origin)
+            .field("headers", &names)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What a client learns from a verified `101` response.
 ///
 /// # Examples
@@ -1286,6 +1307,8 @@ pub struct Verified<'a> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct HeadReader {
     scan: head::Scan,
+    /// The error the last read ended with: repeated until `reset`.
+    failed: Option<HandshakeError>,
 }
 
 impl HeadReader {
@@ -1316,7 +1339,21 @@ impl HeadReader {
         &mut self,
         bytes: &[u8],
     ) -> Result<Option<(ServerHandshake, usize)>, HandshakeError> {
-        let Some(head) = head::split_resume(&mut self.scan, bytes)? else {
+        if let Some(e) = self.failed {
+            return Err(e);
+        }
+        let r = Self::read_server(&mut self.scan, bytes);
+        if let Err(e) = r {
+            self.failed = Some(e);
+        }
+        r
+    }
+
+    fn read_server(
+        scan: &mut head::Scan,
+        bytes: &[u8],
+    ) -> Result<Option<(ServerHandshake, usize)>, HandshakeError> {
+        let Some(head) = head::split_resume(scan, bytes)? else {
             return Ok(None);
         };
         let (method, target) =
@@ -1355,12 +1392,21 @@ impl HeadReader {
         handshake: &'c ClientHandshake,
         bytes: &[u8],
     ) -> Result<Option<(Verified<'c>, usize)>, HandshakeError> {
-        let Some(head) = head::split_resume(&mut self.scan, bytes)? else {
-            return Ok(None);
-        };
-        let status = head::status_line(head.first).ok_or(HandshakeError::MalformedHead)?;
-        let verified = handshake.verify_full(status, head.fields())?;
-        Ok(Some((verified, head.len)))
+        if let Some(e) = self.failed {
+            return Err(e);
+        }
+        let r = (|| {
+            let Some(head) = head::split_resume(&mut self.scan, bytes)? else {
+                return Ok(None);
+            };
+            let status = head::status_line(head.first).ok_or(HandshakeError::MalformedHead)?;
+            let verified = handshake.verify_full(status, head.fields())?;
+            Ok(Some((verified, head.len)))
+        })();
+        if let Err(e) = r {
+            self.failed = Some(e);
+        }
+        r
     }
 
     /// Starts over, for the next head.
@@ -1375,7 +1421,7 @@ impl HeadReader {
     /// # Ok::<(), ws_net::HandshakeError>(())
     /// ```
     pub fn reset(&mut self) {
-        self.scan = head::Scan::default();
+        *self = Self::default();
     }
 }
 

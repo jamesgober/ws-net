@@ -423,7 +423,7 @@ fn test_attack_slow_consumer_refused_at_budget_close_still_fits() {
     while conn.send_binary(&[0; 100]).is_ok() {}
     assert_eq!(conn.send_binary(&[0; 100]), Err(WsError::OutputFull));
     conn.close(CloseCode::TRY_AGAIN_LATER, "slow").unwrap();
-    assert!(conn.buffered_output() <= 4096 + 256);
+    assert!(conn.buffered_output() <= 4096 + 262);
 }
 
 // T-18: many connections, memory per connection.

@@ -170,7 +170,7 @@ fn test_soak_memory_bounded_no_growth() {
     // drain or idle); every busy pair holds at most two input buffers, two
     // messages, and two outputs with growth slack.
     let per_busy =
-        2 * (INPUT + 2 * MAX_MESSAGE as usize + 2 * (MAX_OUTPUT as usize + 256) + 64 * 1024);
+        2 * (INPUT + 2 * MAX_MESSAGE as usize + 2 * (MAX_OUTPUT as usize + 262) + 64 * 1024);
     let inline = pairs_n * 2 * std::mem::size_of::<Connection>();
     while started.elapsed() < Duration::from_secs(secs) {
         for _ in 0..10_000 {
@@ -234,8 +234,8 @@ fn test_soak_memory_bounded_no_growth() {
             for p in &pairs {
                 assert!(p.client.memory_in_use() <= per_busy / 2);
                 assert!(p.server.memory_in_use() <= per_busy / 2);
-                assert!(p.client.buffered_output() as u64 <= MAX_OUTPUT + 256);
-                assert!(p.server.buffered_output() as u64 <= MAX_OUTPUT + 256);
+                assert!(p.client.buffered_output() as u64 <= MAX_OUTPUT + 262);
+                assert!(p.server.buffered_output() as u64 <= MAX_OUTPUT + 262);
             }
             samples.push(used);
             if samples.len() % 60 == 1 {

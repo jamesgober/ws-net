@@ -44,7 +44,7 @@ Every test named `test_attack_*` is in `tests/attacks.rs`.
 | T-14 | Unsolicited Pong floods | Pongs produce events, never output | `test_attack_pong_flood_output_stays_empty` | none |
 | T-15 | Slow messages holding a budget | `Keepalive::with_message_timeout` (1008) | `test_attack_slow_message_idle_and_close_hang_time_out` | 4 to 9 ns per tick |
 | T-16 | Idle connections | `with_idle_timeout` (1001); `release_memory` frees all heap | the same test; `test_attack_many_idle_connections_hold_no_heap` | 0 heap when idle |
-| T-17 | Slow consumers | `Limits::with_max_output` refuses a send past the budget (`OutputFull`); 256 bytes kept for Pong and Close | `test_attack_slow_consumer_refused_at_budget_close_still_fits`, a property under random sends | one comparison per send (about 2.4 ns, `docs/PERFORMANCE.md`) |
+| T-17 | Slow consumers | `Limits::with_max_output` refuses a send past the budget (`OutputFull`); 262 bytes kept for Pong and Close | `test_attack_slow_consumer_refused_at_budget_close_still_fits`, a property under random sends | one comparison per send (about 2.4 ns, `docs/PERFORMANCE.md`) |
 | T-18 | Memory per connection across many connections | inline size at most 512 bytes; idle heap 0 after `release_memory`; every buffer budgeted | `test_attack_many_idle_connections_hold_no_heap`, `tests/memory.rs`, the soak | none |
 | T-19 to T-21 | Decompression bombs, compression side channels, compression context memory | permessage-deflate is not implemented; a client refuses a response that accepts an extension, and a server declines every offer | the extension tests | none (planned for 1.1 with its own defenses) |
 | T-22 | Invalid UTF-8 passed downstream | validated once per byte, failing at the first bad byte (1007), across fragments and reads | `test_attack_invalid_utf8_fails_1007`, Autobahn section 6, the UTF-8 property | linear |
@@ -97,6 +97,28 @@ Run: `fuzz/run-all.sh 24` (WSL or Linux, nightly). The record of each run
 is below; every crash becomes a regression test before it is fixed.
 
 FUZZ_RECORD
+
+## Review
+
+Before 0.7.0 two independent reviews read the engine and the handshake
+against this threat model. They found twelve defects, none reachable for
+code execution or a crash (the crate forbids `unsafe`), all fixed in 0.7.0
+with a regression test each (`tests/regressions.rs`):
+
+| Area | Defect | Effect before the fix |
+|---|---|---|
+| close | a failed connection with output unwritten had no timer left | a peer that never read held the transport open |
+| close | a client's masked Pong and Close (131 bytes each) did not both fit the 256-byte headroom | a flooded client could answer but not close |
+| keepalive | a Ping refused by full output left its deadline in the past | a timer loop woke on every tick |
+| frames | a failed UTF-8 message was still marked as lent | `detach_message` returned invalid bytes as Text |
+| frames | a send that failed part way (key refill) left frames queued; a refused Close counted as sent | a refused call changed state |
+| memory | `wipe` zeroed the length, not the capacity | bytes left by compaction survived the wipe |
+| memory | streamed text did not reserve for the carried partial character | an extra reallocation, outside `try_reserve_exact` |
+| handshake | absolute-form targets were accepted | the target's authority could differ from the `Host` the policy checked |
+| handshake | `HeadReader` resumed after an error | bytes after a bad head could parse as a fresh head |
+| handshake | empty extension list elements across fields were stored as is | `extensions()` could fail on a head that was accepted |
+| logging | `ServerHandshake`'s `Debug` printed the query; `ClientHandshake`'s printed header values | a token in a query or `Authorization` could reach logs |
+| docs | `accept` did not warn that Tier 1 accepts any `Host` | a private-address service was open to DNS rebinding by default |
 
 ## Reporting a vulnerability
 

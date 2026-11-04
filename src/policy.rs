@@ -691,6 +691,13 @@ pub struct Accepted {
 /// Each call scans `bytes` from the start; when the head arrives in many
 /// small reads, use an [`Acceptor`], which scans each byte once.
 ///
+/// The Tier 1 policy accepts any `Host`. A service on a private address
+/// (a development daemon on `127.0.0.1`, an agent RPC) is open to DNS
+/// rebinding: a page on the attacker's domain, resolved to that address,
+/// sends a matching `Host` and `Origin` of its own choosing. Such a
+/// service should accept through an [`AcceptPolicy`] with
+/// [`with_hosts`](AcceptPolicy::with_hosts).
+///
 /// # Errors
 ///
 /// Every [`HandshakeError`] of [`ServerHandshake::from_head`], plus

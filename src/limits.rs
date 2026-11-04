@@ -7,7 +7,7 @@
 /// | incoming frame payload ([`max_frame`](Self::max_frame)) | 1 MiB | at least 125 |
 /// | incoming message, all fragments ([`max_message`](Self::max_message)) | 16 MiB | any |
 /// | outgoing frame payload ([`send_frame`](Self::send_frame)) | equal to `max_frame` | at least 125 |
-/// | pending output ([`max_output`](Self::max_output)) | 32 MiB | any; 256 bytes more for automatic Pong and Close |
+/// | pending output ([`max_output`](Self::max_output)) | 32 MiB | any; 262 bytes more for automatic Pong and Close |
 /// | input buffer ([`input_buffer`](Self::input_buffer)) | 64 KiB | 256 B to 1 MiB |
 /// | capacity kept per buffer after use ([`retain`](Self::retain)) | 64 KiB | any |
 ///
@@ -175,7 +175,7 @@ impl Limits {
     /// Sets the pending-output budget: a send that would take the bytes
     /// waiting for the transport over it is refused with
     /// [`WsError::OutputFull`](crate::WsError::OutputFull). Automatic Pong
-    /// replies and Close frames may use 256 bytes more, so a connection
+    /// replies and Close frames may use 262 bytes more, so a connection
     /// whose peer stopped reading can still answer and close. `u64::MAX`
     /// lifts the budget.
     ///

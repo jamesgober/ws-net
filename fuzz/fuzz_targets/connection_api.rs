@@ -88,7 +88,7 @@ fuzz_target!(|data: &[u8]| {
         let state = conn.state();
         assert!(rank(state) >= rank(last), "{last:?} -> {state:?}");
         last = state;
-        assert!(conn.buffered_output() as u64 <= limits.max_output() + 256);
+        assert!(conn.buffered_output() as u64 <= limits.max_output() + 262);
         rest = &rest[n.min(rest.len())..];
     }
 });

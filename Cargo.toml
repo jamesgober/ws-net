@@ -33,7 +33,7 @@ documentation = "https://docs.rs/ws-net"
 authors = ["James Gober <me@jamesgober.com>"]
 
 # CI tooling stays out of the published crate.
-exclude = ["autobahn/", ".github/"]
+exclude = ["autobahn/", "bench-compare/", ".github/"]
 
 [package.metadata.docs.rs]
 all-features = true

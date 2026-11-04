@@ -154,7 +154,8 @@ fn streamed_text(payload: &[u8], cut: usize) -> Result<Vec<String>, ws_net::WsEr
 fn test_streamed_text_every_cut_delivers_whole() {
     let text = "a€𝄞é".repeat(100);
     for cut in 0..=text.len() {
-        assert_eq!(streamed_text(text.as_bytes(), cut).unwrap(), [text.clone()], "cut {cut}");
+        let got = streamed_text(text.as_bytes(), cut).unwrap();
+        assert_eq!(got, std::slice::from_ref(&text), "cut {cut}");
     }
 }
 
@@ -175,15 +176,10 @@ fn test_streamed_text_invalid_prefix_fails_before_rest_arrives() {
     while failed.is_none() && !rest.is_empty() {
         let n = conn.feed(rest);
         rest = &rest[n..];
-        loop {
-            match conn.poll() {
-                Ok(ws_net::Event::NeedInput) => break,
-                Err(e) => {
-                    failed = Some(e);
-                    break;
-                }
-                Ok(other) => panic!("{other:?}"),
-            }
+        match conn.poll() {
+            Ok(ws_net::Event::NeedInput) => {}
+            Err(e) => failed = Some(e),
+            Ok(other) => panic!("{other:?}"),
         }
     }
     assert_eq!(failed, Some(ws_net::WsError::InvalidUtf8));
@@ -217,7 +213,10 @@ fn test_streamed_text_detach_moves_without_copy() {
             match ev {
                 ws_net::Event::NeedInput => break,
                 ws_net::Event::Text(_) => {
-                    assert_eq!(conn.detach_message(&mut owned), Some(ws_net::MessageKind::Text));
+                    assert_eq!(
+                        conn.detach_message(&mut owned),
+                        Some(ws_net::MessageKind::Text)
+                    );
                 }
                 other => panic!("{other:?}"),
             }

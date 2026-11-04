@@ -528,7 +528,10 @@ impl Writer {
         if self.role == Role::Client && self.masks.is_none() {
             return Err(WsError::RandomUnavailable);
         }
-        let key = self.masks.as_mut().map(MaskGen::next_key);
+        let key = match self.masks.as_mut() {
+            Some(m) => Some(m.next_key().ok_or(WsError::RandomUnavailable)?),
+            None => None,
+        };
         if let Some(k) = key {
             header = header.with_mask(k);
         }
@@ -779,8 +782,8 @@ impl Connection {
     #[cfg(feature = "std")]
     #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     pub fn try_client() -> Result<Self, WsError> {
-        let seed = crate::keys::os_seed().ok_or(WsError::RandomUnavailable)?;
-        Ok(Self::client_with_seed(seed))
+        let masks = MaskGen::from_os().ok_or(WsError::RandomUnavailable)?;
+        Ok(Self::with_role(Role::Client, Some(masks)))
     }
 
     /// The client end, with masking keys derived from a 32-byte secret
@@ -1097,7 +1100,11 @@ fn grow_text(text: &mut String, need: usize, max_message: u64) {
     }
     let budget = usize::try_from(max_message).unwrap_or(usize::MAX);
     let wanted = len.saturating_add(need);
-    let target = text.capacity().saturating_mul(2).max(wanted).min(budget.max(wanted));
+    let target = text
+        .capacity()
+        .saturating_mul(2)
+        .max(wanted)
+        .min(budget.max(wanted));
     text.reserve_exact(target - len);
 }
 
@@ -1800,6 +1807,9 @@ impl Connection {
             w.out_pos = 0;
             w.pong_at = None;
         }
+        if let Some(masks) = w.masks.as_mut() {
+            masks.release();
+        }
     }
 
     /// Heap bytes held by this connection's buffers (capacities, not
@@ -1819,6 +1829,7 @@ impl Connection {
             + self.reader.msg.capacity()
             + self.reader.text.capacity()
             + self.writer.out.capacity()
+            + self.writer.masks.as_ref().map_or(0, MaskGen::heap)
     }
 
     /// Overwrites with zeros every buffered byte (input, reassembly,

@@ -4,7 +4,11 @@
 mod common;
 
 use common::{Ev, client_frame, drive};
-use ws_net::{CloseCode, Connection, Event, Limits, State, WsError, frame::apply_mask};
+use core::time::Duration;
+use ws_net::{
+    ClientHandshake, CloseCode, Connection, Event, HandshakeError, HeadReader, Keepalive, Limits,
+    Millis, ServerHandshake, State, Tick, WsError, frame::apply_mask,
+};
 
 #[test]
 fn test_apply_mask_any_offset_no_overflow() {
@@ -223,4 +227,171 @@ fn test_streamed_text_detach_moves_without_copy() {
         }
     }
     assert_eq!(owned, text.as_bytes());
+}
+
+// From the v0.7.0 security review.
+
+const REQUEST: &str = "GET /chat HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n";
+
+fn request(target: &str, extra: &str) -> Vec<u8> {
+    let mut head = REQUEST.replacen("/chat", target, 1);
+    if !extra.is_empty() {
+        head.push_str(extra);
+        head.push_str("\r\n");
+    }
+    head.push_str("\r\n");
+    head.into_bytes()
+}
+
+#[test]
+fn test_invalid_text_not_lent_for_detach() {
+    // A Text message that fails UTF-8 validation must not be left for
+    // `detach_message` to hand out as Text.
+    let mut conn = Connection::server();
+    let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, 0xc0, 0x80]);
+    assert_eq!(conn.poll().err(), Some(WsError::InvalidUtf8));
+    let mut owned = Vec::new();
+    assert_eq!(conn.detach_message(&mut owned), None);
+    assert!(owned.is_empty());
+}
+
+#[test]
+fn test_close_timeout_bounds_unwritten_output_after_idle_timeout() {
+    // After an idle timeout the Close 1001 is queued; a peer that never
+    // reads it must not keep the transport open forever.
+    let k = Keepalive::new().with_idle_timeout(Duration::from_secs(75));
+    let mut conn = Connection::server().with_keepalive(k);
+    assert_eq!(conn.on_time(Millis(0)), Ok(Tick::Nothing));
+    assert_eq!(conn.on_time(Millis(75_000)), Err(WsError::IdleTimeout));
+    assert!(!conn.should_close_transport());
+    assert_eq!(conn.next_deadline(), Some(Millis(80_000)));
+    assert_eq!(conn.on_time(Millis(79_999)), Ok(Tick::Nothing));
+    assert!(!conn.should_close_transport());
+    assert_eq!(conn.on_time(Millis(80_000)), Ok(Tick::Nothing));
+    assert!(conn.should_close_transport());
+    assert_eq!(conn.next_deadline(), None);
+}
+
+#[test]
+fn test_keepalive_ping_refused_by_full_output_moves_deadline_on() {
+    // A Ping that does not fit must not leave the deadline in the past,
+    // which would make a timer loop spin.
+    let k = Keepalive::new()
+        .with_ping_interval(Duration::from_secs(30))
+        .with_idle_timeout(Duration::from_secs(75));
+    let mut conn = Connection::server()
+        .with_limits(Limits::new().with_max_output(100))
+        .with_keepalive(k);
+    conn.send_binary(&[0; 98]).unwrap();
+    assert_eq!(conn.buffered_output(), 100);
+    assert_eq!(conn.on_time(Millis(0)), Ok(Tick::Nothing));
+    assert_eq!(conn.on_time(Millis(30_000)), Ok(Tick::Nothing));
+    assert_eq!(conn.next_deadline(), Some(Millis(75_000)));
+}
+
+#[test]
+fn test_client_full_output_fits_masked_pong_and_close() {
+    // A client's masked Pong and Close are 131 bytes each: both must fit
+    // above a full output budget.
+    let mut conn =
+        Connection::client_with_seed([7; 32]).with_limits(Limits::new().with_max_output(1000));
+    conn.send_binary(&[0; 992]).unwrap();
+    assert_eq!(conn.buffered_output(), 1000);
+    let mut ping = vec![0x89, 125];
+    ping.extend_from_slice(&[0xab; 125]);
+    let _ = conn.feed(&ping);
+    let _ = conn.poll().unwrap();
+    assert_eq!(conn.buffered_output(), 1131);
+    conn.close(CloseCode::NORMAL, &"x".repeat(123)).unwrap();
+    assert_eq!(conn.buffered_output(), 1262);
+}
+
+#[test]
+fn test_server_target_origin_form_only() {
+    // An absolute-form target carries its own authority, which would
+    // override the Host the policy checked.
+    for target in [
+        "http://evil.example/chat",
+        "//evil.example/chat",
+        "*",
+        "chat",
+    ] {
+        let head = request(target, "");
+        assert_eq!(
+            ServerHandshake::from_head(&head).err(),
+            Some(HandshakeError::MalformedHead),
+            "{target}"
+        );
+    }
+    assert!(
+        ServerHandshake::from_head(&request("/chat?x=1", ""))
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn test_extensions_empty_elements_reparse() {
+    // Empty list elements and spacing across several fields must not make
+    // the stored offers fail to parse again.
+    let head = request(
+        "/",
+        "Sec-WebSocket-Extensions: , foo ,,\r\nSec-WebSocket-Extensions:   bar; x=1 ,",
+    );
+    let (h, _) = ServerHandshake::from_head(&head).unwrap().unwrap();
+    let offers: Vec<_> = h.extensions().collect::<Result<_, _>>().unwrap();
+    let names: Vec<_> = offers.iter().map(|o| o.name()).collect();
+    assert_eq!(names, ["foo", "bar"]);
+}
+
+#[test]
+fn test_debug_omits_query_and_header_values() {
+    let (h, _) = ServerHandshake::from_head(&request("/chat?token=s3cret", ""))
+        .unwrap()
+        .unwrap();
+    let text = format!("{h:?}");
+    assert!(text.contains("/chat") && !text.contains("s3cret"), "{text}");
+
+    let c = ClientHandshake::with_nonce([7; 16]).with_header("Authorization", b"Bearer s3cret");
+    let text = format!("{c:?}");
+    assert!(
+        text.contains("Authorization") && !text.contains("s3cret"),
+        "{text}"
+    );
+}
+
+#[test]
+fn test_head_reader_error_sticky_until_reset() {
+    // After an error the reader must not resume scanning mid-stream and
+    // parse what follows as a fresh head.
+    let mut reader = HeadReader::new();
+    let bad = request("http://evil.example/", "");
+    assert_eq!(
+        reader.server(&bad).err(),
+        Some(HandshakeError::MalformedHead)
+    );
+    let good = request("/chat", "");
+    assert_eq!(
+        reader.server(&good).err(),
+        Some(HandshakeError::MalformedHead)
+    );
+    reader.reset();
+    assert!(reader.server(&good).unwrap().is_some());
+}
+
+#[test]
+fn test_close_wait_after_failed_read_starts_at_next_tick() {
+    // A read that fails after a quiet period must still give the peer the
+    // whole close timeout to read the Close, not one measured from the
+    // last tick before the read.
+    let mut conn = Connection::server().with_keepalive(Keepalive::new());
+    assert_eq!(conn.on_time(Millis(0)), Ok(Tick::Nothing));
+    let _ = conn.feed(&[0x81, 0x00]); // unmasked: a protocol error
+    assert!(conn.poll().is_err());
+    assert!(conn.buffered_output() > 0); // Close 1002 queued
+    assert_eq!(conn.on_time(Millis(20_000)), Ok(Tick::Nothing));
+    assert!(!conn.should_close_transport());
+    assert_eq!(conn.next_deadline(), Some(Millis(25_000)));
+    assert_eq!(conn.on_time(Millis(25_000)), Ok(Tick::Nothing));
+    assert!(conn.should_close_transport());
 }

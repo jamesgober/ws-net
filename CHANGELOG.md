@@ -13,6 +13,84 @@
 
 ---
 
+## [0.7.0] - 2026-11-05
+
+Hardening: ten fuzz targets run for 24 hours each, one attack test per
+threat, a 4-hour soak with 100,000 connection pairs, a big-endian check
+under Miri, a security review with twelve fixes, and
+`docs/SECURITY.md`.
+
+### Added
+
+- `fuzz/`: cargo-fuzz targets for the frame header, the connection in both
+  roles under small, default, and lifted budgets (split invariance, valid
+  output, memory bounds), API call sequences (a refused call changes
+  nothing, state only moves forward), the server and client heads (the
+  resumable reader equals the one-shot reader), extension parsing, the
+  Origin policy, handshake keys, and a differential target against
+  tungstenite 0.30.0. `fuzz/run-all.sh` runs them in parallel and replays
+  WSL clock-step timeouts. A CI job builds them and runs each for 30
+  seconds.
+- `tests/attacks.rs`: one test per threat T-1 to T-29 (T-19 to T-21 wait for
+  permessage-deflate).
+- `tests/soak.rs`: in-memory connection pairs under a simulated clock with a
+  counting allocator (ignored by default; `WS_NET_SOAK_PAIRS`,
+  `WS_NET_SOAK_SECS`).
+- `docs/SECURITY.md`: the threat model, every defense with its test and
+  cost, what is not defended, the conformance and fuzzing record.
+
+### Changed
+
+- A server handshake refuses a request target that is not origin-form (a
+  path starting with `/`, not `//`): absolute-form, authority-form, and `*`
+  are `MalformedHead`. RFC 6455 section 4.1 sends the resource name; an
+  absolute-form target carries an authority that would override the `Host`
+  the policy checked.
+- The output headroom above `max_output` for automatic Pongs and Close
+  frames is 262 bytes (was 256), the size of a client's masked Pong and
+  Close together.
+- After `Closed` with output unwritten (or a client waiting for the
+  server's EOF), the close timeout stays armed: `next_deadline` reports it
+  and `on_time` sets `should_close_transport` when it passes.
+
+### Fixed
+
+- `should_close_transport` stayed false after a close timeout while the
+  unanswered Close was still queued; it is now true at once (the peer
+  stopped reading). Found by the new close-hang attack test.
+- A connection that failed with output unwritten (an idle timeout, a
+  protocol error) had no timer left, so a peer that never read kept the
+  transport open forever.
+- A keepalive Ping refused by a full output left the deadline in the past,
+  so a timer loop woke on every tick.
+- A client's full output could not take both its masked automatic Pong and
+  a Close (131 bytes each, 262 in all, above the 256-byte headroom).
+- A Text message that failed UTF-8 validation was still marked as lent, so
+  `detach_message` handed out the invalid bytes as Text.
+- A multi-frame send that failed part way (a masking-key refill error)
+  left the first frames queued; it now changes nothing. A refused Close no
+  longer marks the Close as sent.
+- Streamed text reserved room for the new chunk but not the carried
+  partial character, so the reservation could fall short and reallocate.
+- Server extension offers spread over several fields with empty list
+  elements were stored so that `extensions()` could fail to parse them
+  again; only the non-empty elements are kept.
+
+### Security
+
+- `wipe` zeroes each buffer's whole allocation, spare capacity included
+  (bytes a compaction or `clear` left behind).
+- `ServerHandshake`'s `Debug` prints the path without the query string,
+  and `ClientHandshake`'s prints header names only: a query or an
+  `Authorization` header can carry a credential.
+- `HeadReader` keeps its error until `reset`, instead of resuming the scan
+  and parsing what follows a bad head as a fresh one.
+- `accept`'s documentation warns that the Tier 1 policy accepts any `Host`,
+  so a service on a private address is open to DNS rebinding without
+  `AcceptPolicy::with_hosts`.
+
+---
+
 ## [0.6.0] - 2026-11-04
 
 Optimisation: measured against tungstenite 0.30.0 and against 0.2.0 on
@@ -329,7 +407,8 @@ Initial scaffold and repository bootstrap. No domain logic yet: this release est
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jamesgober/ws-net/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/ws-net/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/ws-net/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jamesgober/ws-net/compare/v0.3.0...v0.4.0

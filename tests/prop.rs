@@ -605,7 +605,7 @@ proptest! {
             if r == Err(WsError::OutputFull) {
                 prop_assert_eq!(conn.output(), &before[..], "a refused send changes nothing");
             }
-            prop_assert!(conn.buffered_output() as u64 <= budget + 256);
+            prop_assert!(conn.buffered_output() as u64 <= budget + 262);
         }
     }
 
@@ -672,7 +672,15 @@ proptest! {
             let deadline = conn.next_deadline();
             match conn.on_time(ws_net::Millis(now)) {
                 Err(_) => {
-                    prop_assert_eq!(conn.next_deadline(), None);
+                    // Closed: only the wait for the unsent Close stays
+                    // armed, and it lies in the future.
+                    match conn.next_deadline() {
+                        None => prop_assert_eq!(conn.buffered_output(), 0),
+                        Some(d) => {
+                            prop_assert!(conn.buffered_output() > 0);
+                            prop_assert!(d.as_u64() > now);
+                        }
+                    }
                     break;
                 }
                 Ok(_) => {

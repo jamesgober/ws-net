@@ -167,7 +167,7 @@ ways, and this close order, checked step by step. CI runs it on Linux.
 |---|---|---|
 | input | `Limits::input_buffer` (64 KiB default; 256 B to 1 MiB) | `release_memory` (kept between reads otherwise) |
 | reassembly | the message received so far, never above `max_message`, plus up to 1 MiB reserved ahead of arrived bytes | after delivery when larger than `retain`; `release_memory` |
-| output | `max_output` + 256 bytes for automatic Pong and Close; capacity up to twice that (vector growth) plus 64 KiB of written prefix before compaction | when drained and larger than `retain`; `release_memory` |
+| output | `max_output` + 262 bytes for automatic Pong and Close; capacity up to twice that (vector growth) plus 64 KiB of written prefix before compaction | when drained and larger than `retain`; `release_memory` |
 | inline | `size_of::<Connection>()`, at most 512 bytes (tested) | never |
 
 `tests/memory.rs` measures each scenario with a counting allocator: a 4 MiB

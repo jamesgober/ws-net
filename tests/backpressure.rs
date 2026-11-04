@@ -70,7 +70,7 @@ fn test_output_budget_ping_flood_unread_stays_bounded() {
         frames[1],
         (Opcode::Pong, true, 9_999u32.to_be_bytes().to_vec())
     );
-    assert!(conn.buffered_output() <= 1000 + 256);
+    assert!(conn.buffered_output() <= 1000 + 262);
 }
 
 #[test]

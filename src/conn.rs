@@ -1,7 +1,7 @@
 //! The connection: frame parsing, reassembly, control frames, the closing
 //! handshake, and the output queue.
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use core::{fmt, hint::black_box};
 
 use crate::{
@@ -185,8 +185,13 @@ struct Reader {
     frame: Option<Streaming>,
     message: Option<Kind>,
     msg: Vec<u8>,
-    /// Bytes of `msg` known to be complete, valid UTF-8.
-    checked: usize,
+    /// A text message being reassembled: every byte in it was validated
+    /// once, as it arrived, so delivering it needs no second pass.
+    text: String,
+    /// The start of a UTF-8 sequence cut at the end of the last chunk
+    /// (at most 3 bytes), completed by the next one.
+    carry: [u8; 4],
+    carry_len: u8,
     delivered: bool,
     received_close: bool,
     /// Input arrived since the last `on_time`.
@@ -219,29 +224,108 @@ impl Reader {
         self.input.get_mut(filled..).unwrap_or(&mut [])
     }
 
-    /// Validates the unchecked tail of a text message. With `complete`, a
-    /// trailing partial sequence is an error too.
-    fn check_utf8(&mut self, complete: bool) -> Result<(), WsError> {
-        let tail = self.msg.get(self.checked..).unwrap_or(&[]);
-        match core::str::from_utf8(tail) {
-            Ok(_) => {
-                self.checked = self.msg.len();
-                Ok(())
+    /// Appends the unmasked bytes of a text message, validating each byte
+    /// once. A sequence cut at the end of `chunk` waits in `carry` for the
+    /// next chunk; it is checked as a prefix right away, so an invalid byte
+    /// fails the moment it arrives. With `complete`, nothing follows, so a
+    /// cut sequence is an error too.
+    fn push_text(
+        text: &mut String,
+        carry: &mut [u8; 4],
+        carry_len: &mut u8,
+        chunk: &[u8],
+        complete: bool,
+    ) -> Result<(), WsError> {
+        let mut rest = chunk;
+        if *carry_len > 0 {
+            let have = usize::from(*carry_len);
+            let width = utf8_width(carry[0]);
+            let take = width.saturating_sub(have).min(rest.len());
+            let (head, tail) = rest.split_at(take);
+            if let Some(dst) = carry.get_mut(have..have + take) {
+                dst.copy_from_slice(head);
             }
-            Err(e) if e.error_len().is_none() && !complete => {
-                // A sequence cut at the end of what has arrived so far; it
-                // is re-examined when the next bytes arrive.
-                self.checked += e.valid_up_to();
-                Ok(())
+            rest = tail;
+            let have = have + take;
+            let seq = carry.get(..have).unwrap_or(&[]);
+            if have < width {
+                *carry_len = have as u8;
+                return match core::str::from_utf8(seq) {
+                    Err(e) if e.error_len().is_none() && !complete => Ok(()),
+                    _ => Err(WsError::InvalidUtf8),
+                };
             }
-            Err(_) => Err(WsError::InvalidUtf8),
+            let c = core::str::from_utf8(seq).map_err(|_| WsError::InvalidUtf8)?;
+            text.push_str(c);
+            *carry_len = 0;
         }
+        let cut = incomplete_tail(rest);
+        let (body, tail) = rest.split_at(rest.len() - cut);
+        let valid = core::str::from_utf8(body).map_err(|_| WsError::InvalidUtf8)?;
+        text.push_str(valid);
+        if cut > 0 {
+            match core::str::from_utf8(tail) {
+                Err(e) if e.error_len().is_none() && !complete => {}
+                _ => return Err(WsError::InvalidUtf8),
+            }
+            if let Some(dst) = carry.get_mut(..cut) {
+                dst.copy_from_slice(tail);
+            }
+            *carry_len = cut as u8;
+        } else if complete && *carry_len > 0 {
+            return Err(WsError::InvalidUtf8);
+        }
+        Ok(())
+    }
+
+    /// Bytes of the message in progress.
+    fn message_len(&self) -> usize {
+        self.msg.len() + self.text.len() + usize::from(self.carry_len)
+    }
+
+    /// Ends a text message's reassembly: its allocation goes back to `msg`
+    /// for reuse.
+    fn reclaim_text(&mut self) {
+        if self.text.capacity() > 0 {
+            let mut bytes = core::mem::take(&mut self.text).into_bytes();
+            bytes.clear();
+            if bytes.capacity() > self.msg.capacity() {
+                self.msg = bytes;
+            }
+        }
+        self.carry_len = 0;
     }
 
     /// Whether a data message is partly received.
     fn in_message(&self) -> bool {
         self.message.is_some() || self.frame.is_some()
     }
+}
+
+/// The length of the UTF-8 sequence that `lead` starts, or 0 when `lead`
+/// cannot start one.
+const fn utf8_width(lead: u8) -> usize {
+    match lead {
+        0x00..=0x7F => 1,
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => 0,
+    }
+}
+
+/// How many bytes at the end of `bytes` begin a sequence that needs more
+/// bytes than are there (0 to 3). Only the last three bytes are looked at,
+/// so the cost is constant; whether they are valid is checked separately.
+fn incomplete_tail(bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    for back in 1..=len.min(3) {
+        let b = bytes.get(len - back).copied().unwrap_or(0);
+        if b & 0xC0 != 0x80 {
+            return if utf8_width(b) > back { back } else { 0 };
+        }
+    }
+    0
 }
 
 /// Output side: the queue, masking, and the close flags.
@@ -603,7 +687,9 @@ impl Connection {
                 frame: None,
                 message: None,
                 msg: Vec::new(),
-                checked: 0,
+                text: String::new(),
+                carry: [0; 4],
+                carry_len: 0,
                 delivered: false,
                 received_close: false,
                 arrived: false,
@@ -1003,6 +1089,18 @@ fn grow(msg: &mut Vec<u8>, need: usize, max_message: u64) {
     msg.reserve_exact(target - len);
 }
 
+/// [`grow`] for a text message's `String`.
+fn grow_text(text: &mut String, need: usize, max_message: u64) {
+    let len = text.len();
+    if text.capacity() - len >= need {
+        return;
+    }
+    let budget = usize::try_from(max_message).unwrap_or(usize::MAX);
+    let wanted = len.saturating_add(need);
+    let target = text.capacity().saturating_mul(2).max(wanted).min(budget.max(wanted));
+    text.reserve_exact(target - len);
+}
+
 /// The receive state machine, over the two halves so that a [`Sender`] can
 /// borrow the writer while the event borrows the reader.
 fn poll_inner<'r>(
@@ -1013,12 +1111,12 @@ fn poll_inner<'r>(
     reader.lent = None;
     if reader.delivered {
         reader.delivered = false;
+        reader.reclaim_text();
         if reader.msg.capacity() > limits.retain() {
             reader.msg = Vec::new();
         } else {
             reader.msg.clear();
         }
-        reader.checked = 0;
     }
     if reader.pos == reader.filled {
         // Nothing buffered: start the next read at the front, so the buffer
@@ -1045,22 +1143,35 @@ fn poll_inner<'r>(
                     .unwrap_or(usize::MAX)
                     .min(avail);
                 let start = reader.pos;
+                f.remaining -= n as u64;
+                let complete = f.remaining == 0 && f.fin;
                 if let Some(chunk) = reader.input.get_mut(start..start + n) {
                     if let Some(key) = f.mask {
                         apply_mask(chunk, key, f.phase);
                     }
-                    grow(&mut reader.msg, chunk.len(), limits.max_message());
-                    reader.msg.extend_from_slice(chunk);
+                    match f.kind {
+                        Kind::Binary => {
+                            grow(&mut reader.msg, chunk.len(), limits.max_message());
+                            reader.msg.extend_from_slice(chunk);
+                        }
+                        Kind::Text => {
+                            grow_text(&mut reader.text, chunk.len(), limits.max_message());
+                            let chunk = reader.input.get(start..start + n).unwrap_or(&[]);
+                            let pushed = Reader::push_text(
+                                &mut reader.text,
+                                &mut reader.carry,
+                                &mut reader.carry_len,
+                                chunk,
+                                complete,
+                            );
+                            if let Err(e) = pushed {
+                                return Err(writer.fail(e));
+                            }
+                        }
+                    }
                 }
                 reader.pos += n;
                 f.phase = (f.phase + n) % 4;
-                f.remaining -= n as u64;
-                if f.kind == Kind::Text {
-                    let complete = f.remaining == 0 && f.fin;
-                    if let Err(e) = reader.check_utf8(complete) {
-                        return Err(writer.fail(e));
-                    }
-                }
                 if f.remaining > 0 {
                     reader.frame = Some(f);
                     continue;
@@ -1073,10 +1184,7 @@ fn poll_inner<'r>(
                 reader.messages_in = reader.messages_in.saturating_add(1);
                 reader.lent = Some(Lent::Reassembled(f.kind.into()));
                 return Ok(match f.kind {
-                    Kind::Text => match core::str::from_utf8(&reader.msg) {
-                        Ok(text) => Event::Text(text),
-                        Err(_) => return Err(writer.fail(WsError::InvalidUtf8)),
-                    },
+                    Kind::Text => Event::Text(&reader.text),
                     Kind::Binary => Event::Binary(&reader.msg),
                 });
             }
@@ -1157,7 +1265,7 @@ fn poll_inner<'r>(
                 (Opcode::Text, None) => Kind::Text,
                 (_, None) => Kind::Binary,
             };
-            let total = (reader.msg.len() as u64).saturating_add(header.payload_len);
+            let total = (reader.message_len() as u64).saturating_add(header.payload_len);
             if total > limits.max_message() {
                 return Err(writer.fail(WsError::MessageTooLarge));
             }
@@ -1188,16 +1296,23 @@ fn poll_inner<'r>(
             }
 
             reader.pos += header_len;
+            if reader.message.is_none() && kind == Kind::Text {
+                // Reuse the binary buffer's allocation; it is empty here, so
+                // the conversion checks nothing.
+                let bytes = core::mem::take(&mut reader.msg);
+                reader.text = String::from_utf8(bytes).unwrap_or_default();
+                reader.text.clear();
+            }
             reader.message = Some(kind);
             // Reserving the frame up front saves growing the buffer piece by
             // piece, but only up to RESERVE_CAP: the length is the peer's
             // claim, and the budgets may have been lifted.
             let ahead = header.payload_len.min(RESERVE_CAP);
-            grow(
-                &mut reader.msg,
-                usize::try_from(ahead).unwrap_or(0),
-                limits.max_message(),
-            );
+            let ahead = usize::try_from(ahead).unwrap_or(0);
+            match kind {
+                Kind::Binary => grow(&mut reader.msg, ahead, limits.max_message()),
+                Kind::Text => grow_text(&mut reader.text, ahead, limits.max_message()),
+            }
             let streaming = Streaming {
                 kind,
                 fin: header.fin,
@@ -1674,7 +1789,8 @@ impl Connection {
         }
         if !r.in_message() {
             r.msg = Vec::new();
-            r.checked = 0;
+            r.text = String::new();
+            r.carry_len = 0;
             r.delivered = false;
             r.lent = None;
         }
@@ -1699,7 +1815,10 @@ impl Connection {
     /// ```
     #[must_use]
     pub fn memory_in_use(&self) -> usize {
-        self.reader.input.capacity() + self.reader.msg.capacity() + self.writer.out.capacity()
+        self.reader.input.capacity()
+            + self.reader.msg.capacity()
+            + self.reader.text.capacity()
+            + self.writer.out.capacity()
     }
 
     /// Overwrites with zeros every buffered byte (input, reassembly,
@@ -1732,6 +1851,11 @@ impl Connection {
         r.msg.iter_mut().for_each(|b| *b = 0);
         let _ = black_box(&mut r.msg);
         r.msg.clear();
+        let mut text = core::mem::take(&mut r.text).into_bytes();
+        text.iter_mut().for_each(|b| *b = 0);
+        let _ = black_box(&mut text);
+        r.carry = [0; 4];
+        r.carry_len = 0;
         r.pos = 0;
         r.filled = 0;
         r.lent = None;
@@ -1790,9 +1914,13 @@ impl Connection {
         let lent = r.lent.take()?;
         into.clear();
         match lent {
+            Lent::Reassembled(MessageKind::Text) => {
+                let text = core::mem::take(&mut r.text).into_bytes();
+                r.msg = core::mem::replace(into, text);
+                Some(MessageKind::Text)
+            }
             Lent::Reassembled(kind) => {
                 core::mem::swap(into, &mut r.msg);
-                r.checked = 0;
                 Some(kind)
             }
             Lent::Input(kind, start, end) => {

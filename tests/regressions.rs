@@ -116,3 +116,112 @@ fn test_budget_maximum_length_header_fails_before_payload() {
     assert_eq!(events, vec![Ev::Err(WsError::FrameTooLarge)]);
     assert_eq!(out, [0x88, 0x02, 0x03, 0xF1]);
 }
+
+// 0.6: streamed text is validated once, with a cut sequence carried into
+// the next chunk. Fail-fast must hold at every cut, and the delivered text
+// must equal the input for every cut.
+
+fn streamed_text(payload: &[u8], cut: usize) -> Result<Vec<String>, ws_net::WsError> {
+    // One text frame larger than the input buffer, so it streams; the
+    // payload's first `cut` bytes arrive in the first read.
+    let limits = ws_net::Limits::new().with_input_buffer(256);
+    let mut conn = ws_net::Connection::server().with_limits(limits);
+    let wire = common::client_frame(0x1, true, payload);
+    let header = wire.len() - payload.len();
+    let (first, second) = wire.split_at(header + cut);
+    let mut got = Vec::new();
+    for piece in [first, second] {
+        let mut rest = piece;
+        loop {
+            let n = conn.feed(rest);
+            rest = &rest[n..];
+            loop {
+                match conn.poll()? {
+                    ws_net::Event::Text(t) => got.push(t.to_string()),
+                    ws_net::Event::NeedInput => break,
+                    other => panic!("{other:?}"),
+                }
+            }
+            if rest.is_empty() {
+                break;
+            }
+        }
+    }
+    Ok(got)
+}
+
+#[test]
+fn test_streamed_text_every_cut_delivers_whole() {
+    let text = "a€𝄞é".repeat(100);
+    for cut in 0..=text.len() {
+        assert_eq!(streamed_text(text.as_bytes(), cut).unwrap(), [text.clone()], "cut {cut}");
+    }
+}
+
+#[test]
+fn test_streamed_text_invalid_prefix_fails_before_rest_arrives() {
+    // F4 90 starts no valid sequence (above U+10FFFF): it must fail when the
+    // first part arrives, not when the message completes.
+    let mut payload = vec![b'a'; 300];
+    payload.extend_from_slice(&[0xF4, 0x90, 0x80, 0x80]);
+    payload.extend_from_slice(&[b'b'; 300]);
+    let limits = ws_net::Limits::new().with_input_buffer(256);
+    let mut conn = ws_net::Connection::server().with_limits(limits);
+    let wire = common::client_frame(0x1, true, &payload);
+    let header = wire.len() - payload.len();
+    let upto = header + 302; // ... 'a' F4 90 | 80 80 'b' ...
+    let mut rest = &wire[..upto];
+    let mut failed = None;
+    while failed.is_none() && !rest.is_empty() {
+        let n = conn.feed(rest);
+        rest = &rest[n..];
+        loop {
+            match conn.poll() {
+                Ok(ws_net::Event::NeedInput) => break,
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+                Ok(other) => panic!("{other:?}"),
+            }
+        }
+    }
+    assert_eq!(failed, Some(ws_net::WsError::InvalidUtf8));
+}
+
+#[test]
+fn test_streamed_text_truncated_at_end_fails() {
+    let mut payload = vec![b'a'; 300];
+    payload.extend_from_slice(&[0xE2, 0x82]); // a cut euro sign, then the end
+    for cut in [0, 299, 300, 301, 302] {
+        assert_eq!(
+            streamed_text(&payload, cut).unwrap_err(),
+            ws_net::WsError::InvalidUtf8,
+            "cut {cut}"
+        );
+    }
+}
+
+#[test]
+fn test_streamed_text_detach_moves_without_copy() {
+    let text = "κόσμε".repeat(200);
+    let limits = ws_net::Limits::new().with_input_buffer(256);
+    let mut conn = ws_net::Connection::server().with_limits(limits);
+    let wire = common::client_frame(0x1, true, text.as_bytes());
+    let mut rest = &wire[..];
+    let mut owned = Vec::new();
+    while !rest.is_empty() {
+        let n = conn.feed(rest);
+        rest = &rest[n..];
+        while let Ok(ev) = conn.poll() {
+            match ev {
+                ws_net::Event::NeedInput => break,
+                ws_net::Event::Text(_) => {
+                    assert_eq!(conn.detach_message(&mut owned), Some(ws_net::MessageKind::Text));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+    assert_eq!(owned, text.as_bytes());
+}

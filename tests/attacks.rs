@@ -320,6 +320,7 @@ fn test_attack_unmasked_client_frame_fails_1002() {
 
 // T-7: predictable masking keys.
 
+#[cfg(feature = "std")]
 #[test]
 fn test_attack_masking_keys_unpredictable_across_connections() {
     let key = |conn: &mut Connection| {

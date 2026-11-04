@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "ws-net"
-version = "0.5.0"
+version = "0.6.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -33,7 +33,7 @@ documentation = "https://docs.rs/ws-net"
 authors = ["James Gober <me@jamesgober.com>"]
 
 # CI tooling stays out of the published crate.
-exclude = ["autobahn/", ".github/"]
+exclude = ["autobahn/", "bench-compare/", ".github/"]
 
 [package.metadata.docs.rs]
 all-features = true

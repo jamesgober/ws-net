@@ -1,0 +1,53 @@
+name: Benchmarks
+
+# Run by hand, or by pushing a branch named bench/*. Numbers come from the
+# hosted runners (shared virtual machines): compare rows within one run,
+# never across runs.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["bench/**"]
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  bench:
+    name: Bench (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Baseline (v0.2.0)
+        shell: bash
+        run: |
+          git worktree add ../v020 v0.2.0
+          (cd ../v020 && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo bench --bench bench -- --save-baseline v020)
+      - name: This commit against the baseline
+        shell: bash
+        run: cargo bench --bench bench -- --baseline-lenient v020
+      - name: ws-net against tungstenite
+        shell: bash
+        run: cd bench-compare && cargo bench --bench compare
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## ${{ matrix.os }}: this commit against v0.2.0"
+            python3 bench-compare/summary.py target/criterion v020
+            echo
+            echo "## ${{ matrix.os }}: ws-net against tungstenite 0.30.0"
+            python3 bench-compare/summary.py bench-compare/target/criterion
+          } | tee summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.os }}
+          path: summary.md

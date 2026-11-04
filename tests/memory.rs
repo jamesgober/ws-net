@@ -11,19 +11,27 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ws_net::{Connection, Event, Limits};
+use ws_net::{
+    CloseCode, Connection, Event, Keepalive, Limits, Millis, PreparedMessage, ServerHandshake,
+    WsError,
+};
 
 struct Counting;
 
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+/// Allocations larger than this fail (`usize::MAX`: none fail).
+static FAIL_ABOVE: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 // SAFETY: every call forwards to the system allocator with the same layout
 // and pointer; the counters are atomics and never affect the result.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: the caller's contract for `alloc` is passed on unchanged.
+        if layout.size() > FAIL_ABOVE.load(Ordering::SeqCst) {
+            return core::ptr::null_mut();
+        }
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
             let now = CURRENT.fetch_add(layout.size(), Ordering::SeqCst) + layout.size();
@@ -41,6 +49,9 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         // SAFETY: as for `alloc`.
+        if new_size > FAIL_ABOVE.load(Ordering::SeqCst) {
+            return core::ptr::null_mut();
+        }
         let p = unsafe { System.realloc(ptr, layout, new_size) };
         if !p.is_null() {
             let _ = CURRENT.fetch_sub(layout.size(), Ordering::SeqCst);
@@ -190,4 +201,88 @@ fn test_memory_per_connection_matches_formula() {
         conn.advance_output(n);
     }
     assert_eq!(allocations() - before, 0, "allocations in steady state");
+
+    // 5. The handshake record takes one allocation (FR-11): a browser's
+    //    request, validated from raw bytes, and the 101 written into a
+    //    buffer that already has room.
+    let request: &[u8] = b"GET /chat HTTP/1.1\r\nHost: 127.0.0.1:53817\r\nConnection: Upgrade\r\n\
+        Pragma: no-cache\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n\
+        Upgrade: websocket\r\nOrigin: http://127.0.0.1:53817\r\nSec-WebSocket-Version: 13\r\n\
+        Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: rpc.v1, rpc.v2\r\n\
+        Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n\r\n";
+    let mut response = Vec::with_capacity(512);
+    let before = allocations();
+    let (handshake, _) = ServerHandshake::from_head(request).unwrap().unwrap();
+    handshake.write_response(None, &mut response).unwrap();
+    assert_eq!(allocations() - before, 1, "allocations per handshake");
+    drop(handshake);
+
+    // 6. More steady-state paths that allocate nothing once warm:
+    //    fragmented messages after the reassembly buffer grew, automatic
+    //    Pong replacement under a Ping flood, idle keepalive ticks, and
+    //    prepared sends.
+    let mut fragments = Vec::new();
+    for _ in 0..100 {
+        frame_into(&mut fragments, 0x01, b"part one, ");
+        frame_into(&mut fragments, 0x89, b"ping");
+        frame_into(&mut fragments, 0x80, b"part two");
+    }
+    let prepared = PreparedMessage::text("broadcast");
+    let mut conn = Connection::server()
+        .with_keepalive(Keepalive::new().with_ping_interval(core::time::Duration::from_secs(60)));
+    let _ = conn.on_time(Millis(0));
+    let _ = drive(&mut conn, &fragments);
+    for _ in 0..100 {
+        conn.send_prepared(&prepared).unwrap();
+    }
+    let n = conn.output().len();
+    conn.advance_output(n);
+    let before = allocations();
+    for round in 0..10 {
+        let _ = drive(&mut conn, &fragments);
+        let _ = conn.on_time(Millis(round));
+        for _ in 0..100 {
+            conn.send_prepared(&prepared).unwrap();
+        }
+        let n = conn.output().len();
+        conn.advance_output(n);
+    }
+    assert_eq!(
+        allocations() - before,
+        0,
+        "allocations on fragments, pings, ticks, prepared"
+    );
+
+    //    And the Close echo.
+    let mut close = Vec::new();
+    frame_into(&mut close, 0x88, &[0x03, 0xE8]);
+    let before = allocations();
+    let _ = drive(&mut conn, &close);
+    assert_eq!(conn.output(), [0x88, 0x02, 0x03, 0xE8]);
+    assert_eq!(allocations() - before, 0, "allocations on the Close echo");
+    drop(conn);
+
+    // 7. Allocation failure fails the connection with 1011 instead of
+    //    aborting the process (try_reserve on every reassembly growth).
+    let limits = Limits::new()
+        .with_max_frame(64 << 20)
+        .with_max_message(64 << 20);
+    let mut big = Vec::new();
+    frame_into(&mut big, 0x82, &vec![1u8; 8 << 20]);
+    let mut conn = Connection::server().with_limits(limits);
+    FAIL_ABOVE.store(512 * 1024, Ordering::SeqCst);
+    let mut result = Ok(Event::NeedInput);
+    let mut rest = &big[..];
+    while !rest.is_empty() && result.is_ok() {
+        let n = conn.feed(rest);
+        rest = &rest[n..];
+        result = conn.poll().map(|_| Event::NeedInput);
+    }
+    FAIL_ABOVE.store(usize::MAX, Ordering::SeqCst);
+    assert_eq!(result.unwrap_err(), WsError::AllocationFailed);
+    assert_eq!(
+        WsError::AllocationFailed.close_code(),
+        Some(CloseCode::INTERNAL_ERROR)
+    );
+    assert_eq!(conn.output(), [0x88, 0x02, 0x03, 0xF3]);
 }

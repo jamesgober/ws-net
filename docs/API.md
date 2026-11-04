@@ -1,7 +1,7 @@
 # ws-net - API Reference
 
 > Complete reference for every public item in `ws-net`, with examples.
-> **Status: pre-1.0 (0.5.0), design locked.** Every item of the 1.0 surface
+> **Status: pre-1.0 (0.6.0), design locked.** Every item of the 1.0 surface
 > is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
 > lands in; items marked shipped are documented in full below. The surface is
 > frozen at `1.0.0`, after LexerSketch Studio ships on it. See
@@ -102,10 +102,10 @@ async runtime, a test harness, or memory.
 
 ```toml
 [dependencies]
-ws-net = "0.5"
+ws-net = "0.6"
 
 # no_std (alloc only)
-ws-net = { version = "0.5", default-features = false }
+ws-net = { version = "0.6", default-features = false }
 ```
 
 ## Quick start
@@ -401,7 +401,7 @@ machine. All methods are synchronous and never block.
 | Method | Description |
 |---|---|
 | `Connection::server() -> Connection` | The accepting end. Refuses unmasked frames; sends unmasked. |
-| `Connection::client() -> Connection` | The connecting end, masking keys from a seed drawn from the OS cryptographic random source (through `mod-rand`). If that source fails it fails closed: the connection is `Closed` and every send returns `RandomUnavailable`. Feature `std`. |
+| `Connection::client() -> Connection` | The connecting end, masking keys drawn from the OS cryptographic random source (through `mod-rand`) in 1 KiB batches of 256 keys, held on the heap and freed by `release_memory`; a refill that fails refuses the send. If that source fails it fails closed: the connection is `Closed` and every send returns `RandomUnavailable`. Feature `std`. |
 | `Connection::try_client() -> Result<Connection, WsError>` | As `client`, returning `WsError::RandomUnavailable` when the OS source fails. Feature `std`. |
 | `Connection::client_with_seed(seed: [u8; 32]) -> Connection` | The connecting end, masking keys derived from a 32-byte secret seed. The seed must be unpredictable to the peer (RFC 6455 section 5.3); a fixed seed is for tests. |
 | `Connection::with_limits(self, limits: Limits) -> Connection` | Replaces the [budgets](#limits). |
@@ -954,6 +954,7 @@ impl core::error::Error for WsError {}
 | `IdleTimeout` | No input for the idle timeout; Close 1001 queued. | 1001 |
 | `CloseTimeout` | The peer did not answer our Close in time; nothing more sent. | 1006 (never sent) |
 | `MessageTimeout` | A data message stayed incomplete past the message timeout; Close 1008 queued. | 1008 |
+| `AllocationFailed` | Memory for an incoming message could not be allocated (the system is out of memory; the message was within budget); Close 1011 queued instead of the process aborting. | 1011 |
 | `RandomUnavailable` | A refused call: this client has no masking keys, because the OS random source failed when `Connection::client` ran. Use `try_client`. | `None` |
 
 `close_code()` is the failure's status code, or `None` for a refused call,
@@ -994,6 +995,9 @@ A validated opening request (RFC 6455 section 4.2.1), ready to be accepted.
 | `select_protocol<'p>(&self, preference: &[&'p str]) -> Option<&'p str>` | The first of the server's protocols that the client offered (exact, case-sensitive). |
 | `accept(&self, policy: &AcceptPolicy, out: &mut Vec<u8>) -> Result<Connection, HandshakeError>` | Applies the policy, appends the `101`, returns the server connection with the policy's limits. Nothing is written on a refusal. |
 | `write_response(&self, protocol: Option<&str>, out: &mut Vec<u8>) -> Result<(), HandshakeError>` | Appends the complete `101` response, selecting `protocol` or none. |
+
+**Cost.** The record is one allocation: target, `Host`, `Origin`, the
+offered protocols, and the offered extensions in one exactly-sized buffer.
 
 **What is checked.** The method is `GET`; the target is visible ASCII;
 exactly one `Host` (visible ASCII); `Upgrade` lists `websocket` and
@@ -1572,7 +1576,8 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | `Limits::with_max_output` (32 MiB default), `with_input_buffer` (256 B to 1 MiB, default 64 KiB), `with_retain` (64 KiB), their accessors, `DEFAULT_*` constants | 0.4 |
 | `WsError` 0.2 variants and `close_code`; `RandomUnavailable` | 0.2, 0.3 |
 | `WsError::OutputFull`, `IdleTimeout` (1001), `CloseTimeout` (1006), `MessageTimeout` (1008) | 0.4 |
-| `WsError::InvalidCompressedData` (1007, feature `deflate`) | 0.5 |
+| `WsError::InvalidCompressedData` (1007, feature `deflate`) | 1.1 (moved: no first-party DEFLATE crate) |
+| `WsError::AllocationFailed` (1011) | 0.6 |
 | `CloseCode`, `CloseFrame` | 0.2 |
 | `CloseCode::is_private_use`, `is_registered`, `is_reporting_only` | 0.4 |
 | `ServerHandshake`: `from_request`, `from_head`, `accept_key`, `target`, `host`, `origin`, `protocols`, `write_response`, `MAX_HEAD` | 0.2 |
@@ -1580,11 +1585,12 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | `ServerHandshake::extensions`, `write_response_with` (negotiated extensions, extra headers), `response_fields` (the 101 field list for an HTTP layer), `MAX_EXTENSION_OFFERS` | 0.4 |
 | `accept`, `Acceptor`, `Accepted`, `AcceptPolicy` (`new`, `with_origins`, `with_protocols`, `require_protocol`, `with_limits`, `check`), `Decision`, `OriginPolicy`, `HeadReader`, `Verified` | 0.3 |
 | `AcceptPolicy::with_hosts`, `with_keepalive`, `with_secure`; `HandshakeError::HostRefused`; `write_refusal(status, retry_after, out)` (403, 429, 503) | 0.4 |
-| `AcceptPolicy::with_deflate` | 0.5 |
+| `AcceptPolicy::with_deflate` | 1.1 (moved) |
 | `ClientHandshake`: `new`, `with_nonce`, `with_protocols`, `with_origin`, `key`, `write_request`, `verify`, `verify_head` | 0.2 |
 | `ClientHandshake::try_new` | 0.3 |
 | `ClientHandshake::with_header`, `verify_full` | 0.4 |
-| `ClientHandshake::with_deflate`, `connection`, `connection_with_seed`; `Connection::with_extensions`, `negotiated` | 0.5 |
+| `ClientHandshake::connection`, `connection_with_seed`; `Verified::none`; `Connection::with_extensions`, `negotiated` | 0.5 |
+| `ClientHandshake::with_deflate` | 1.1 (moved) |
 | `HandshakeError` 0.2 variants, `status`, `write_response`; `UnexpectedBody`, `OriginRefused`, `ProtocolRequired`, `RandomUnavailable` | 0.2, 0.3 |
 | `HandshakeError::InvalidExtensions` | 0.4 |
 | `accept_key`, `AcceptKey` | 0.2 |
@@ -1592,8 +1598,9 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | `Opcode::is_data`, `MAX_HEADER_LEN`, `MAX_CONTROL_PAYLOAD`, `MAX_PAYLOAD_LEN` | 0.3 |
 | `FrameHeader::encode_to_slice` | 0.4 |
 | `FrameHeader::with_rsv` | 0.5 |
-| `extension` module: `parse`, `Offers`, `Offer` (`name`, `params`), `Param`, `Negotiated` (`none`, `is_empty`, `deflate`), `MAX_OFFERS`, `MAX_PARAMS` | 0.4 |
+| `extension` module: `parse`, `Offers`, `Offer` (`name`, `params`), `Param`, `Negotiated` (`none`, `is_empty`), `MAX_OFFERS`, `MAX_PARAMS` | 0.4 |
 | `blocking` module (feature `std`): `accept`, `accept_with`, `connect`, `connect_with`, `WebSocket` (`from_upgraded`, `read`, `send_text`, `send_binary`, `send`, `ping`, `close`, `flush`, `connection`, `connection_mut`, `get_ref`, `get_mut`, `into_inner`), `Error` | 0.4 |
-| permessage-deflate (feature `deflate`): `DeflateConfig`, `DeflateParams`, `SendOptions`, `send_text_with`, `send_binary_with`, `PreparedMessage::with_deflate` | 0.5 (needs the first-party compression crate) |
+| `SendOptions`, `send_text_with`, `send_binary_with` | 0.5 |
+| permessage-deflate (feature `deflate`): `DeflateConfig`, `DeflateParams`, `PreparedMessage::with_deflate`, `Negotiated::deflate` | 1.1 (moved: no first-party DEFLATE crate exists; `dev/PLAN.md` D-032) |
 | `VERSION` | 0.3 |
 | After 1.0: shared-segment output, a public extension trait, RFC 8441 (`ExtendedConnect`), connection state export | 1.x |

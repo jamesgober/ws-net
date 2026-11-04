@@ -125,6 +125,18 @@ fn bench_send(c: &mut Criterion) {
             black_box(client.output().len())
         })
     });
+    #[cfg(feature = "std")]
+    group.bench_function("client_masked_os", |b| {
+        b.iter(|| {
+            let mut client = Connection::client();
+            for _ in 0..100_000 {
+                client
+                    .send_text("{\"jsonrpc\":\"2.0\",\"result\":true}")
+                    .unwrap_or_default();
+            }
+            black_box(client.output().len())
+        })
+    });
     group.bench_function("server_unmasked", |b| {
         b.iter(|| {
             let mut server = Connection::server();

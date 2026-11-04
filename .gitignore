@@ -20,3 +20,5 @@ Cargo.lock
 
 # Autobahn TestSuite reports
 /autobahn/reports/
+/bench-compare/target/
+/bench-compare/Cargo.lock

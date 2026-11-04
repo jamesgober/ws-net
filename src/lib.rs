@@ -172,6 +172,14 @@ mod tests {
         assert::<crate::OriginPolicy>();
         assert::<crate::Acceptor>();
         assert::<crate::Accepted>();
+        assert::<crate::PreparedMessage>();
+        assert::<crate::Message>();
+        assert::<crate::Keepalive>();
+        assert::<crate::Stats>();
+        assert::<crate::Sender<'static>>();
+        assert::<crate::extension::Negotiated>();
+        #[cfg(feature = "std")]
+        assert::<crate::blocking::Error>();
     }
 
     #[test]

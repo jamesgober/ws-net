@@ -987,13 +987,12 @@ fn poll_inner<'r>(
         }
         reader.checked = 0;
     }
-    if reader.pos == reader.filled && reader.frame.is_none() {
-        // Nothing buffered: an input buffer grown past `retain` shrinks.
+    if reader.pos == reader.filled {
+        // Nothing buffered: start the next read at the front, so the buffer
+        // never needs compacting. (The input buffer is bounded by its own
+        // limit and kept for the next read; `release_memory` frees it.)
         reader.pos = 0;
         reader.filled = 0;
-        if reader.input.len() > limits.retain() {
-            reader.input = Vec::new();
-        }
     }
     if writer.failed || reader.received_close {
         return Ok(Event::Closed);

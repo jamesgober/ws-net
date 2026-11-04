@@ -1,7 +1,7 @@
 # ws-net - API Reference
 
 > Complete reference for every public item in `ws-net`, with examples.
-> **Status: pre-1.0 (0.3.0), design locked.** Every item of the 1.0 surface
+> **Status: pre-1.0 (0.4.0), design locked.** Every item of the 1.0 surface
 > is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
 > lands in; items marked shipped are documented in full below. The surface is
 > frozen at `1.0.0`, after LexerSketch Studio ships on it. See
@@ -30,8 +30,15 @@
   - [Sending messages](#sending-messages)
   - [Control frames: `send_ping`, `send_pong`, `close`](#control-frames)
   - [Output: `output`, `advance_output`](#output)
-  - [Accessors: `limits`, `role`, `state`](#accessors)
+  - [Accessors: `limits`, `role`, `state`, `is_open`, `can_send`](#accessors)
+  - [Keepalive: `with_keepalive`, `on_time`, `next_deadline`](#keepalive)
+  - [Memory and observability](#memory-and-observability)
+  - [Split borrow and detach: `poll_split`, `Sender`, `detach_message`](#split-borrow-and-detach)
 - [`Event`](#event)
+- [`Message` and `MessageKind`](#message-and-messagekind)
+- [`PreparedMessage`](#preparedmessage)
+- [`Keepalive`, `Millis`, `Tick`](#keepalive-millis-tick)
+- [`Stats`](#stats)
 - [`Limits`](#limits)
 - [`Role`](#role)
 - [`State`](#state)
@@ -44,6 +51,9 @@
 - [`HeadReader`](#headreader)
 - [`ClientHandshake`](#clienthandshake)
 - [`HandshakeError`](#handshakeerror)
+- [`write_refusal`](#write_refusal)
+- [The `extension` module](#the-extension-module)
+- [The `blocking` module](#the-blocking-module)
 - [`accept_key` and `AcceptKey`](#accept_key-and-acceptkey)
 - [The `frame` module](#the-frame-module)
   - [`Opcode`](#opcode)
@@ -67,6 +77,13 @@ async runtime, a test harness, or memory.
 | [`OriginPolicy`](#originpolicy) | enum | Which pages may connect (cross-site WebSocket hijacking defense). |
 | [`HeadReader`](#headreader) | struct | A resumable raw head reader with linear total work. |
 | [`Connection`](#connection) | struct | One WebSocket connection after the handshake. |
+| [`Message`, `MessageKind`](#message-and-messagekind) | enum | Owned messages; the kind of a data message. |
+| [`PreparedMessage`](#preparedmessage) | struct | A server message encoded once for broadcast. |
+| [`Keepalive`, `Millis`, `Tick`](#keepalive-millis-tick) | struct, enum | Pings and timeouts on the caller's clock. |
+| [`Stats`](#stats) | struct | Per-connection counters. |
+| [`Sender`](#split-borrow-and-detach) | struct | The output side, while an event borrows the input. |
+| [`extension`](#the-extension-module) | module | `Sec-WebSocket-Extensions` offers and what was negotiated. |
+| [`blocking`](#the-blocking-module) | module | A `Read + Write` adapter (feature `std`). |
 | [`Event`](#event) | enum | What [`poll`](#connectionpoll) found: a message, a control frame, or a need. |
 | [`Limits`](#limits) | struct | Frame and message budgets. |
 | [`Role`](#role) | enum | Server or client: which way masking goes. |
@@ -85,10 +102,10 @@ async runtime, a test harness, or memory.
 
 ```toml
 [dependencies]
-ws-net = "0.3"
+ws-net = "0.4"
 
 # no_std (alloc only)
-ws-net = { version = "0.3", default-features = false }
+ws-net = { version = "0.4", default-features = false }
 ```
 
 ## Quick start
@@ -249,22 +266,37 @@ A [`WsError`](#wserror) is one of two things, told apart by
 
 ### Budgets and memory
 
-What the peer sends cannot grow a connection's memory past its budgets:
+What the peer sends cannot grow a connection's memory past its budgets, and
+what this end sends is bounded too:
 
-- The input buffer holds at most 64 KiB; [`feed`](#input) takes what fits.
+- The input buffer holds at most [`Limits::input_buffer`](#limits) (64 KiB
+  by default); [`feed`](#input) takes what fits.
 - A frame's payload length is checked against [`Limits::max_frame`](#limits)
   from its header, before any payload is read; a fragmented message's total
   against [`Limits::max_message`](#limits) before each fragment is read.
-  Either violation fails with 1009.
+  Either violation fails with 1009. A message's buffer never grows past the
+  message budget.
 - Reassembly reserves at most 1 MiB ahead of the bytes that have arrived,
   even with the budgets lifted to `u64::MAX`: a length in a header is a
   claim, not an allocation.
-- An automatic Pong still waiting, unwritten, at the end of the output is
-  replaced by the next one, so a peer that pings without reading cannot
-  grow the output. At most one Close is ever queued.
+- A send that would take the pending output over
+  [`Limits::max_output`](#limits) (32 MiB by default) is refused with
+  `OutputFull` and changes nothing. Automatic Pongs and Close frames may use
+  256 bytes more, so a connection whose peer stopped reading can still
+  answer and close.
+- An automatic Pong still unwritten at the end of the output is replaced by
+  the next one, so a peer that pings without reading cannot grow the output.
+  At most one Close is ever queued.
+- A reassembly or output buffer that grew past [`Limits::retain`](#limits)
+  (64 KiB) shrinks once it holds nothing pending; [`release_memory`](#memory-and-observability)
+  frees every empty buffer, so an idle connection holds no heap.
 
-What the caller sends is the caller's to pace: the output queue holds every
-frame you queue until you write it.
+Peak memory of a busy connection: the input buffer, plus the message being
+reassembled (at most `max_message` plus 1 MiB reserved ahead), plus the
+output (at most twice `max_output` + 256 by vector growth, plus 64 KiB of
+written prefix before compaction). An idle connection after
+`release_memory`: `size_of::<Connection>()`, at most 512 bytes.
+`tests/memory.rs` checks each bound with a counting allocator.
 
 ### The closing handshake
 
@@ -516,6 +548,89 @@ assert!(conn.is_open() && !conn.can_send());
 # Ok::<(), ws_net::WsError>(())
 ```
 
+<a id="keepalive"></a>
+### Keepalive: `with_keepalive`, `on_time`, `next_deadline`
+
+| Method | Description |
+|---|---|
+| `with_keepalive(self, keepalive: Keepalive) -> Connection` | Sets the ping interval and timeouts ([`Keepalive`](#keepalive-millis-tick)). |
+| `on_time(&mut self, now: Millis) -> Result<Tick, WsError>` | Applies the rules at `now` (the caller's monotonic milliseconds). Any input since the last call is activity. Order: close timeout, idle timeout, message timeout, keepalive Ping. `Tick::PingQueued` means write the output. |
+| `next_deadline(&self) -> Option<Millis>` | When `on_time` next has work; `None` with no timer armed. Sleep until then. |
+| `should_close_transport(&self) -> bool` | `Closed` and the output written; a client also needs the server's EOF, a failure, or the close timeout (the server closes first). |
+
+Errors from `on_time`: `IdleTimeout` (Close 1001 queued), `CloseTimeout`
+(nothing more sent; close the transport), `MessageTimeout` (Close 1008
+queued, the slow-message defense). Each is returned once; later ticks
+return `Ok(Tick::Nothing)`. A clock that goes backwards is treated as no
+time passing. Call `on_time` after each read and at `next_deadline`: its
+precision is the spacing of those calls.
+
+```rust
+use core::time::Duration;
+use ws_net::{Connection, Keepalive, Millis, Tick, WsError};
+
+let k = Keepalive::new().with_ping_interval(Duration::from_secs(30)).with_idle_timeout(Duration::from_secs(75));
+let mut conn = Connection::server().with_keepalive(k);
+assert_eq!(conn.on_time(Millis(0))?, Tick::Nothing);
+assert_eq!(conn.next_deadline(), Some(Millis(30_000)));
+assert_eq!(conn.on_time(Millis(30_000))?, Tick::PingQueued); // Ping payload: the time
+assert_eq!(conn.next_deadline(), Some(Millis(75_000)));
+assert_eq!(conn.on_time(Millis(75_000)), Err(WsError::IdleTimeout)); // Close 1001 queued
+assert_eq!(conn.next_deadline(), None);
+# Ok::<(), WsError>(())
+```
+
+### Memory and observability
+
+| Method | Description |
+|---|---|
+| `buffered_output(&self) -> usize` | Bytes waiting for the transport. |
+| `release_memory(&mut self)` | Frees every buffer that holds no pending bytes. |
+| `memory_in_use(&self) -> usize` | Heap bytes held (capacities). |
+| `stats(&self) -> Stats` | The [counters](#stats). |
+| `wipe(&mut self)` | Zeroes input, reassembly, and output buffers and the masking seed (through `black_box`: best effort, not a guarantee, as no `unsafe` is used), then fails the connection. |
+
+```rust
+use ws_net::{Connection, Limits, WsError};
+
+let mut conn = Connection::server().with_limits(Limits::new().with_max_output(1024));
+conn.send_binary(&[0; 1000])?;
+assert_eq!(conn.buffered_output(), 1004);
+assert_eq!(conn.send_binary(&[0; 100]), Err(WsError::OutputFull)); // nothing changed
+let n = conn.output().len();
+conn.advance_output(n);
+conn.release_memory();
+assert_eq!(conn.memory_in_use(), 0);
+assert_eq!(conn.stats().bytes_out, 1004);
+# Ok::<(), WsError>(())
+```
+
+<a id="split-borrow-and-detach"></a>
+### Split borrow and detach: `poll_split`, `Sender`, `detach_message`
+
+| Item | Description |
+|---|---|
+| `poll_split(&mut self) -> Result<(Event<'_>, Sender<'_>), WsError>` | As `poll`, plus a `Sender` over the output side: reply while the event still borrows the message. |
+| `Sender::{send_text, send_binary, send_ping, send_pong, close, send_prepared}` | The `Connection` rules and budget. |
+| `detach_message(&mut self, into: &mut Vec<u8>) -> Option<MessageKind>` | Right after a `Text` or `Binary` event, moves its bytes into `into`: a buffer swap for reassembled messages (no copy), one copy for single-frame ones. `None` otherwise, or after more input was fed. |
+| `send(&mut self, message: &Message) -> Result<(), WsError>` | Sends an owned [`Message`](#message-and-messagekind). |
+| `send_prepared(&mut self, message: &PreparedMessage) -> Result<(), WsError>` | Appends a [prepared message](#preparedmessage); server role only. |
+
+```rust
+use ws_net::{Connection, Event, MessageKind};
+
+let mut conn = Connection::server();
+let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']); // masked "hi"
+let (event, mut sender) = conn.poll_split()?;
+if let Event::Text(text) = event {
+    sender.send_text(text)?; // echo without copying the message
+}
+let mut owned = Vec::new();
+assert_eq!(conn.detach_message(&mut owned), Some(MessageKind::Text));
+assert_eq!(owned, b"hi");
+# Ok::<(), ws_net::WsError>(())
+```
+
 ## `Event`
 
 ```rust,ignore
@@ -552,6 +667,122 @@ assert!(matches!(conn.poll().unwrap(), Event::Close(None)));
 assert_eq!(conn.output(), [0x88, 0x00]); // the echo
 ```
 
+## `Message` and `MessageKind`
+
+```rust,ignore
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Message { Text(String), Binary(Vec<u8>), Ping(Vec<u8>), Pong(Vec<u8>), Close(Option<(CloseCode, String)>) }
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MessageKind { Text, Binary }
+```
+
+Owned messages for the convenience APIs and the blocking adapter.
+`From<&str>`, `From<String>`, `From<&[u8]>`, `From<Vec<u8>>`; `is_data`,
+`is_close`; `Event::to_message` copies an event into one.
+
+```rust
+use ws_net::{Connection, Message};
+
+let mut conn = Connection::server();
+let _ = conn.feed(&[0x82, 0x81, 0, 0, 0, 0, 7]);
+let message = conn.poll()?.to_message().expect("a message");
+assert_eq!(message, Message::from(vec![7]));
+conn.send(&message)?;
+assert_eq!(conn.output(), [0x82, 0x01, 7]);
+# Ok::<(), ws_net::WsError>(())
+```
+
+## `PreparedMessage`
+
+```rust,ignore
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PreparedMessage { /* private */ }
+```
+
+| Method | Description |
+|---|---|
+| `PreparedMessage::text(text: &str)`, `binary(data: &[u8])` | Unmasked frames encoded once, split at the default send-frame size. |
+| `text_with(text, limits: &Limits)`, `binary_with(data, limits)` | Split at `limits.send_frame()`. |
+| `as_bytes(&self) -> &[u8]`, `len`, `is_empty`, `payload_len` | Inspection. |
+
+`Connection::send_prepared` appends the frames with one copy. It is refused
+for a client (frames must be masked with fresh keys), after a Close, during
+an outgoing fragmented message, and over the output budget.
+
+```rust
+use ws_net::{Connection, PreparedMessage};
+
+let tick = PreparedMessage::text("tick");
+let mut a = Connection::server();
+let mut b = Connection::server();
+a.send_prepared(&tick)?;
+b.send_prepared(&tick)?;
+assert_eq!(a.output(), b.output());
+assert!(Connection::client_with_seed([1; 32]).send_prepared(&tick).is_err());
+# Ok::<(), ws_net::WsError>(())
+```
+
+<a id="keepalive-millis-tick"></a>
+## `Keepalive`, `Millis`, `Tick`
+
+```rust,ignore
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Millis(pub u64);
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Keepalive { /* private */ }
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Tick { Nothing, PingQueued }
+```
+
+| Item | Default | Description |
+|---|---|---|
+| `Millis(u64)`, `Millis::from_duration`, `as_u64`, `+ Duration` (saturating) | | The caller's monotonic clock in milliseconds. |
+| `Keepalive::new()` / `default()` | | The defaults below. |
+| `with_ping_interval(self, Duration)` | off | Queue a Ping when no frame arrived for this long. |
+| `with_idle_timeout(self, Duration)` | off | Fail with `IdleTimeout` when no byte arrived for this long. |
+| `with_close_timeout(self, Duration)` | 5 s | Fail with `CloseTimeout` when the peer does not answer our Close. |
+| `with_message_timeout(self, Duration)` | off | Fail with `MessageTimeout` when a data message stays incomplete. |
+| `ping_interval`, `idle_timeout`, `close_timeout`, `message_timeout` | | Accessors (`Option<Duration>`). |
+
+```rust
+use core::time::Duration;
+use ws_net::{Keepalive, Millis};
+
+let k = Keepalive::new().with_message_timeout(Duration::from_secs(10));
+assert_eq!(k.close_timeout(), Some(Duration::from_secs(5)));
+assert_eq!(Millis(1) + Duration::from_millis(2), Millis(3));
+```
+
+## `Stats`
+
+```rust,ignore
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Stats {
+    pub bytes_in: u64, pub bytes_out: u64, pub frames_in: u64,
+    pub messages_in: u64, pub messages_out: u64,
+    pub pings_in: u64, pub pongs_in: u64, pub closes_in: u64,
+}
+```
+
+Counters for metrics and rate limiting, saturating at `u64::MAX`.
+`bytes_in` counts bytes taken by `feed` and `commit`; `bytes_out` bytes
+acknowledged by `advance_output`.
+
+```rust
+let mut conn = ws_net::Connection::server();
+let _ = conn.feed(&[0x89, 0x80, 0, 0, 0, 0]); // masked empty Ping
+let _ = conn.poll();
+assert_eq!((conn.stats().frames_in, conn.stats().pings_in), (1, 1));
+```
+
 ## `Limits`
 
 ```rust,ignore
@@ -573,6 +804,10 @@ them.
 | `max_message(&self) -> u64` | The message budget. |
 | `with_send_frame(self, bytes: u64) -> Limits` | The largest outgoing frame payload, at least 125. Unset, it equals `max_frame`. |
 | `send_frame(&self) -> u64` | The outgoing frame size. |
+| `with_max_output(self, bytes: u64) -> Limits`, `max_output` | The pending-output budget (32 MiB); `u64::MAX` lifts it. |
+| `with_input_buffer(self, bytes: usize) -> Limits`, `input_buffer` | The input buffer (64 KiB), clamped to 256 B to 1 MiB. |
+| `with_retain(self, bytes: usize) -> Limits`, `retain` | Capacity kept per buffer after use (64 KiB). |
+| `DEFAULT_MAX_FRAME`, `DEFAULT_MAX_MESSAGE`, `DEFAULT_MAX_OUTPUT`, `DEFAULT_INPUT_BUFFER`, `DEFAULT_RETAIN`, `MIN_INPUT_BUFFER`, `MAX_INPUT_BUFFER` | The defaults and bounds, as constants. |
 
 ```rust
 use ws_net::{Connection, Limits, WsError};
@@ -645,6 +880,7 @@ whether it may appear on the wire.
 | `CloseCode::new(code: u16) -> CloseCode` | Wraps any code (3000-4999 are for applications). |
 | `as_u16(&self) -> u16` | The number. |
 | `is_sendable(&self) -> bool` | 1000-1003, 1007-1014, 3000-4999. |
+| `is_private_use`, `is_registered`, `is_reporting_only` | 4000-4999; 3000-3999; 1005, 1006, 1015. |
 
 ```rust
 use ws_net::CloseCode;
@@ -707,6 +943,10 @@ impl core::error::Error for WsError {}
 | `UnexpectedEof` | The transport closed before the closing handshake completed. | 1006 (never sent) |
 | `InvalidArgument(&'static str)` | A refused call: an argument the protocol does not allow. The text names the rule. | `None` |
 | `InvalidState(&'static str)` | A refused call made in the wrong state. The text names the rule. | `None` |
+| `OutputFull` | A refused send: it would exceed `Limits::max_output`. Write the output, or close by policy. | `None` |
+| `IdleTimeout` | No input for the idle timeout; Close 1001 queued. | 1001 |
+| `CloseTimeout` | The peer did not answer our Close in time; nothing more sent. | 1006 (never sent) |
+| `MessageTimeout` | A data message stayed incomplete past the message timeout; Close 1008 queued. | 1008 |
 | `RandomUnavailable` | A refused call: this client has no masking keys, because the OS random source failed when `Connection::client` ran. Use `try_client`. | `None` |
 
 `close_code()` is the failure's status code, or `None` for a refused call,
@@ -733,6 +973,10 @@ A validated opening request (RFC 6455 section 4.2.1), ready to be accepted.
 |---|---|
 | `ServerHandshake::MAX_HEAD: usize` | 16 KiB: the largest head `from_head` (and `ClientHandshake::verify_head`) accepts. |
 | `ServerHandshake::MAX_PROTOCOLS: usize` | 64: the most subprotocols accepted from one request. |
+| `ServerHandshake::MAX_EXTENSION_OFFERS: usize` | 16: the most extension offers accepted from one request. |
+| `extensions(&self) -> extension::Offers<'_>` | The offered extensions, parsed, in client order. |
+| `write_response_with(&self, protocol, extensions: &Negotiated, extra: &[(&str, &[u8])], out)` | The `101` with extra response headers (validated: token names, not reserved, no control bytes). |
+| `response_fields(&self, protocol, extensions: &Negotiated) -> Result<ResponseFields<'_>, HandshakeError>` | The `101`'s fields as `(name, value)` pairs for an HTTP layer that writes the status line. |
 | `from_head(bytes: &[u8]) -> Result<Option<(ServerHandshake, usize)>, HandshakeError>` | Validates a request from its raw bytes. `Ok(None)` until the blank line ending the head arrives; then the handshake and the head's length (bytes after it are the first frames). |
 | `from_request(method: &str, target: &str, headers: impl IntoIterator<Item = (&str, &[u8])>) -> Result<ServerHandshake, HandshakeError>` | Validates a request an HTTP layer has parsed. |
 | `accept_key(&self) -> &AcceptKey` | The `Sec-WebSocket-Accept` value. |
@@ -809,7 +1053,7 @@ pub struct AcceptPolicy { /* private */ }
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Decision<'a> { pub protocol: Option<&'a str> }
+pub struct Decision<'a> { pub protocol: Option<&'a str>, pub extensions: Negotiated }
 ```
 
 | Method | Description |
@@ -819,6 +1063,9 @@ pub struct Decision<'a> { pub protocol: Option<&'a str> }
 | `with_protocols(self, preference: &[&str]) -> Result<AcceptPolicy, HandshakeError>` | The server's subprotocols in preference order; `InvalidProtocol` for a non-token. |
 | `require_protocol(self) -> AcceptPolicy` | Refuse a client that offers none of them (`ProtocolRequired`). |
 | `with_limits(self, limits: Limits) -> AcceptPolicy` | The limits of accepted connections. |
+| `with_keepalive(self, keepalive: Keepalive) -> AcceptPolicy`, `keepalive` | The keepalive of accepted connections. |
+| `with_hosts(self, hosts: &[&str]) -> Result<AcceptPolicy, HandshakeError>`, `hosts` | `Host` allowlist (DNS rebinding): RFC 3986 authorities, compared case-insensitively, IP literals by value; `HostRefused` (403) otherwise. |
+| `with_secure(self, secure: bool) -> AcceptPolicy` | The endpoint is (or is not) behind TLS: same-origin then pins the page's scheme, and a port-less host entry means 443 or 80. |
 | `origins(&self) -> &OriginPolicy`, `limits(&self) -> &Limits` | Accessors. |
 | `check<'h>(&self, handshake: &'h ServerHandshake) -> Result<Decision<'h>, HandshakeError>` | The decision without writing anything, for an HTTP layer that writes its own `101`. `OriginRefused` or `ProtocolRequired`. |
 
@@ -900,7 +1147,7 @@ pub struct HeadReader { /* private */ }
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Verified<'a> { pub protocol: Option<&'a str> }
+pub struct Verified<'a> { pub protocol: Option<&'a str>, pub extensions: Negotiated }
 ```
 
 | Method | Description |
@@ -960,6 +1207,8 @@ The client side: the request to send, and the check of the response.
 | `with_nonce(nonce: [u8; 16]) -> ClientHandshake` | A caller-chosen nonce (RFC 6455 requires it to be random per connection). |
 | `with_protocols(self, protocols: &[&str]) -> ClientHandshake` | Offers subprotocols, in preference order. |
 | `with_origin(self, origin: &str) -> ClientHandshake` | Sends an `Origin` field, as browsers do. |
+| `with_header(self, name: &str, value: &[u8]) -> ClientHandshake` | An extra request header (`Authorization`, `Cookie`), validated at write; reserved names refused. |
+| `verify_full(&self, status, headers) -> Result<Verified<'_>, HandshakeError>` | As `verify`, returning the protocol and the negotiated extensions. |
 | `key(&self) -> &str` | The `Sec-WebSocket-Key` sent. |
 | `write_request(&self, host: &str, path: &str, out: &mut Vec<u8>) -> Result<(), HandshakeError>` | Appends the request. `InvalidRequest` for an empty or non-visible-ASCII host, path, or origin, or a path without a leading `/`; `InvalidProtocol` for a non-token protocol. Nothing is written on error. |
 | `verify(&self, status: u16, headers: impl IntoIterator<Item = (&str, &[u8])>) -> Result<Option<&str>, HandshakeError>` | Checks a response an HTTP layer parsed; returns the selected subprotocol. |
@@ -1021,6 +1270,8 @@ impl core::error::Error for HandshakeError {}
 | `UnsupportedVersion` | `Sec-WebSocket-Version` missing, repeated, or not `13`. | 426 |
 | `UnexpectedBody` | The upgrade request declares a body: `Transfer-Encoding`, or `Content-Length` other than `0` (request smuggling defense). | 400 |
 | `OriginRefused` | The policy refused the `Origin` (or its absence). | 403 |
+| `HostRefused` | The policy's `Host` allowlist refused the request (DNS rebinding). | 403 |
+| `InvalidExtensions` | `Sec-WebSocket-Extensions` malformed, or over 16 offers or 16 parameters. | 400 |
 | `ProtocolRequired` | The policy requires a subprotocol and none of the server's was offered. | 400 |
 | `RandomUnavailable` | Client side: the OS random source failed, so no nonce exists; nothing was written. | 500 (not answered) |
 | `InvalidProtocol` | A subprotocol that is not a token, more than 64, or a selection not offered. | 400 |
@@ -1040,6 +1291,91 @@ HandshakeError::UnsupportedVersion.write_response(&mut out);
 assert_eq!(out, b"HTTP/1.1 426 Upgrade Required\r\nsec-websocket-version: 13\r\n\
 content-length: 0\r\nconnection: close\r\n\r\n");
 assert_eq!(HandshakeError::HeadTooLarge.status(), 431);
+```
+
+## `write_refusal`
+
+```rust,ignore
+pub fn write_refusal(status: u16, retry_after_seconds: Option<u32>, out: &mut Vec<u8>) -> Result<(), HandshakeError>;
+```
+
+A complete refusal (`content-length: 0`, `connection: close`, and
+`retry-after` when given) for statuses a server decides itself: 403 by
+policy, 429 for rate limits, 503 when shedding load. `InvalidRequest` for a
+status outside 400 to 599; nothing is written then.
+
+```rust
+let mut out = Vec::new();
+ws_net::write_refusal(429, Some(5), &mut out)?;
+assert!(out.starts_with(b"HTTP/1.1 429 Too Many Requests\r\n"));
+assert!(out.ends_with(b"retry-after: 5\r\n\r\n"));
+# Ok::<(), ws_net::HandshakeError>(())
+```
+
+## The `extension` module
+
+```rust,ignore
+pub fn parse(value: &[u8]) -> Offers<'_>;             // Item = Result<Offer<'_>, HandshakeError>
+pub struct Offer<'a>;                                  // name(), params()
+pub struct Param<'a> { pub name: &'a str, pub value: Option<&'a str> }
+#[non_exhaustive] pub struct Negotiated;               // none(), is_empty()
+pub const MAX_OFFERS: usize = 16;
+pub const MAX_PARAMS: usize = 16;
+```
+
+RFC 6455 section 9.1: `extension = token *( ";" param )`, `param = token [
+"=" ( token / quoted-string ) ]`. The list is read with `parse-net` (commas
+inside quoted strings do not split); a value may be absent; a quoted value
+must be a token once unquoted, and one with a backslash escape is refused.
+`ServerHandshake::from_request` validates every offer (at most 16 over all
+fields) and `extensions()` iterates them. In this version no extension is
+negotiated: every offer is declined (RFC 6455 allows it), and a client
+refuses a response that accepts one it did not offer. permessage-deflate is
+planned behind the `deflate` feature.
+
+```rust
+use ws_net::extension;
+
+let offers: Vec<_> = extension::parse(b"permessage-deflate; client_max_window_bits=\"10\"; server_no_context_takeover")
+    .collect::<Result<_, _>>()?;
+let params: Vec<_> = offers[0].params().map(|p| (p.name, p.value)).collect();
+assert_eq!(params, [("client_max_window_bits", Some("10")), ("server_no_context_takeover", None)]);
+# Ok::<(), ws_net::HandshakeError>(())
+```
+
+## The `blocking` module
+
+Feature `std`. A `Read + Write` adapter, comparable to tungstenite's
+`WebSocket<Stream>`.
+
+| Item | Description |
+|---|---|
+| `blocking::accept(stream) -> Result<WebSocket<S>, Error>` | Reads the head, applies the Tier 1 policy, writes the `101` or the refusal. |
+| `blocking::accept_with(stream, policy: &AcceptPolicy) -> Result<(WebSocket<S>, ServerHandshake), Error>` | With a policy; returns the request for routing. |
+| `blocking::connect(stream, host, path) -> Result<WebSocket<S>, Error>` | The client side, with a fresh OS-random nonce. |
+| `blocking::connect_with(stream, host, path, handshake: &ClientHandshake) -> Result<(WebSocket<S>, Option<String>), Error>` | With protocols, Origin, headers; returns the selected protocol. |
+| `WebSocket::from_upgraded(stream, leftover: &[u8], connection: Connection)` | Continues after an HTTP layer's upgrade (http-net's `Upgraded`). |
+| `read(&mut self) -> Result<Message, Error>` | The next message, Ping, Pong, or Close; replies are written before it returns or blocks; `Error::Closed` after the closing handshake. |
+| `send_text`, `send_binary`, `send`, `ping`, `close`, `flush` | Queue and write fully. |
+| `connection`, `connection_mut`, `get_ref`, `get_mut`, `into_inner` | Access. |
+| `Error { Io, Protocol(WsError), Handshake(HandshakeError), Closed }` | `#[non_exhaustive]`, `Display`, `std::error::Error`. |
+
+The adapter calls `on_time` around every read. While blocked in `read`,
+nothing ticks: give the stream a read timeout of at most the ping interval,
+and a timed-out read ticks the keepalive and reads again.
+
+```rust
+use std::io::Cursor;
+use ws_net::{Connection, Message, blocking::WebSocket};
+
+// A masked "Hello" that arrived with the request head.
+let leftover = [0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58];
+let mut ws = WebSocket::from_upgraded(Cursor::new(Vec::new()), &leftover, Connection::server());
+let message = ws.read()?;
+assert_eq!(message, Message::from("Hello"));
+ws.send(&message)?;
+assert_eq!(ws.get_ref().get_ref(), &[0x81, 0x05, b'H', b'e', b'l', b'l', b'o']);
+# Ok::<(), ws_net::blocking::Error>(())
 ```
 
 ## `accept_key` and `AcceptKey`
@@ -1123,6 +1459,7 @@ pub struct FrameHeader {
 | `decode(bytes: &[u8]) -> Result<Option<(FrameHeader, usize)>, WsError>` | Decodes a header from the front of `bytes`: `Ok(None)` if more bytes are needed, else the header and its length (2 to 14). |
 | `encoded_len(&self) -> usize` | The encoded length. |
 | `encode(&self, out: &mut Vec<u8>) -> Result<(), WsError>` | Appends the header, length in its shortest encoding. |
+| `encode_to_slice(&self, out: &mut [u8]) -> Result<usize, WsError>` | The same into a caller buffer, no allocation; `InvalidArgument` when too short. |
 
 `decode` enforces the rules that hold whatever the role: `ReservedOpcode`,
 `FragmentedControl`, `ControlTooLong`, `InvalidLength` (non-minimal, or the
@@ -1172,7 +1509,7 @@ assert_eq!(&data, b"Hello");
 
 | Feature | Default | Description |
 |---|---|---|
-| `std` | yes | Masking-key seeds and handshake nonces from the OS cryptographic random source through `mod-rand` (first party, no dependencies): `Connection::client`, `try_client`, `ClientHandshake::new`, `try_new`, `ClientHandshake: Default`. Without it the crate is `no_std` + `alloc` and clients take a seed (`client_with_seed`, `with_nonce`), which must come from a cryptographic source. |
+| `std` | yes | Masking-key seeds and handshake nonces from the OS cryptographic random source through `mod-rand` (first party, no dependencies): `Connection::client`, `try_client`, `ClientHandshake::new`, `try_new`, `ClientHandshake: Default`, and the [`blocking`](#the-blocking-module) module. Without it the crate is `no_std` + `alloc` and clients take a seed (`client_with_seed`, `with_nonce`), which must come from a cryptographic source. |
 
 Dependencies: `parse-net` (always; the shared RFC 9110 grammar, no
 allocator, no dependencies of its own) and `mod-rand` (feature `std`). No
@@ -1186,7 +1523,11 @@ third-party runtime dependency.
 | Message | 16 MiB default | [`Limits`](#limits) |
 | Control frame payload | 125 bytes | RFC 6455 |
 | Close reason | 123 bytes | RFC 6455 |
-| Input buffer | 64 KiB | [`feed`](#input) |
+| Input buffer | 64 KiB default, 256 B to 1 MiB | [`Limits`](#limits) |
+| Pending output | 32 MiB default, plus 256 B for automatic Pong and Close | [`Limits`](#limits) |
+| Capacity kept per buffer | 64 KiB default | [`Limits`](#limits) |
+| Close timeout | 5 s default | [`Keepalive`](#keepalive-millis-tick) |
+| Extension offers, parameters per offer | 16, 16 | [`extension`](#the-extension-module) |
 | Reassembly reserved ahead of arrived bytes | 1 MiB | [Budgets and memory](#budgets-and-memory) |
 | Handshake head | 16 KiB | [`ServerHandshake::MAX_HEAD`](#serverhandshake) |
 | Offered subprotocols | 64 | [`ServerHandshake`](#serverhandshake) |

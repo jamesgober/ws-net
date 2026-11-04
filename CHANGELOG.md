@@ -13,6 +13,39 @@
 
 ---
 
+## [0.7.0] - 2026-11-05
+
+Hardening: ten fuzz targets run for 24 hours each, one attack test per
+threat, a 4-hour soak with 100,000 connection pairs, a big-endian check
+under Miri, and `docs/SECURITY.md`.
+
+### Added
+
+- `fuzz/`: cargo-fuzz targets for the frame header, the connection in both
+  roles under small, default, and lifted budgets (split invariance, valid
+  output, memory bounds), API call sequences (a refused call changes
+  nothing, state only moves forward), the server and client heads (the
+  resumable reader equals the one-shot reader), extension parsing, the
+  Origin policy, handshake keys, and a differential target against
+  tungstenite 0.30.0. `fuzz/run-all.sh` runs them in parallel and replays
+  WSL clock-step timeouts. A CI job builds them and runs each for 30
+  seconds.
+- `tests/attacks.rs`: one test per threat T-1 to T-29 (T-19 to T-21 wait for
+  permessage-deflate).
+- `tests/soak.rs`: in-memory connection pairs under a simulated clock with a
+  counting allocator (ignored by default; `WS_NET_SOAK_PAIRS`,
+  `WS_NET_SOAK_SECS`).
+- `docs/SECURITY.md`: the threat model, every defense with its test and
+  cost, what is not defended, the conformance and fuzzing record.
+
+### Fixed
+
+- `should_close_transport` stayed false after a close timeout while the
+  unanswered Close was still queued; it is now true at once (the peer
+  stopped reading). Found by the new close-hang attack test.
+
+---
+
 ## [0.6.0] - 2026-11-04
 
 Optimisation: measured against tungstenite 0.30.0 and against 0.2.0 on
@@ -329,7 +362,8 @@ Initial scaffold and repository bootstrap. No domain logic yet: this release est
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jamesgober/ws-net/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/ws-net/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/ws-net/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jamesgober/ws-net/compare/v0.3.0...v0.4.0

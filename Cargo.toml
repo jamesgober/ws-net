@@ -71,6 +71,8 @@ mod-rand = { version = "1", default-features = false, features = ["tier3"], opti
 # #################################
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+# The upgrade hand-off integration test only; never a runtime dependency.
+http-net  = "0.9"
 proptest  = "1"
 
 

@@ -949,6 +949,21 @@ impl Connection {
     }
 }
 
+/// Makes room for `need` more bytes in a reassembly buffer, doubling as
+/// usual but never past the message budget (the budget was checked against
+/// the header, so `len + need` fits it), so a message's buffer holds at
+/// most `max_message` bytes.
+fn grow(msg: &mut Vec<u8>, need: usize, max_message: u64) {
+    let len = msg.len();
+    if msg.capacity() - len >= need {
+        return;
+    }
+    let budget = usize::try_from(max_message).unwrap_or(usize::MAX);
+    let wanted = len.saturating_add(need);
+    let target = msg.capacity().saturating_mul(2).max(wanted).min(budget.max(wanted));
+    msg.reserve_exact(target - len);
+}
+
 /// The receive state machine, over the two halves so that a [`Sender`] can
 /// borrow the writer while the event borrows the reader.
 fn poll_inner<'r>(
@@ -996,6 +1011,7 @@ fn poll_inner<'r>(
                     if let Some(key) = f.mask {
                         apply_mask(chunk, key, f.phase);
                     }
+                    grow(&mut reader.msg, chunk.len(), limits.max_message());
                     reader.msg.extend_from_slice(chunk);
                 }
                 reader.pos += n;
@@ -1139,7 +1155,11 @@ fn poll_inner<'r>(
             // piece, but only up to RESERVE_CAP: the length is the peer's
             // claim, and the budgets may have been lifted.
             let ahead = header.payload_len.min(RESERVE_CAP);
-            reader.msg.reserve(usize::try_from(ahead).unwrap_or(0));
+            grow(
+                &mut reader.msg,
+                usize::try_from(ahead).unwrap_or(0),
+                limits.max_message(),
+            );
             let streaming = Streaming {
                 kind,
                 fin: header.fin,

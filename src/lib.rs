@@ -110,6 +110,9 @@
 extern crate alloc;
 
 mod base64;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod blocking;
 mod close;
 mod conn;
 mod error;

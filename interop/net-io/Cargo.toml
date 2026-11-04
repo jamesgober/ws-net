@@ -1,0 +1,25 @@
+# ws-net on net-io's drivers: end-to-end tests over loopback sockets, a
+# socket-level soak, and the end-to-end echo benchmark. Not published and
+# not part of ws-net's dependency graph. tungstenite is here only as the
+# benchmark's competitor.
+[package]
+name         = "ws-net-interop-net-io"
+version      = "0.0.0"
+publish      = false
+edition      = "2024"
+rust-version = "1.85"
+license      = "Apache-2.0 OR MIT"
+
+[dependencies]
+ws-net = { path = "../.." }
+net-io = "0.6"
+
+[dev-dependencies]
+tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
+
+
+[profile.release]
+debug = 1
+
+# A standalone package, not a member of any workspace.
+[workspace]

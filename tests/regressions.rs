@@ -7,7 +7,7 @@ use common::{Ev, client_frame, drive};
 use ws_net::{CloseCode, Connection, Event, Limits, State, WsError, frame::apply_mask};
 
 #[test]
-fn test_apply_mask_with_any_offset_does_not_overflow() {
+fn test_apply_mask_any_offset_no_overflow() {
     // The offset is only meaningful modulo 4; a caller tracking a 64-bit
     // stream position must not hit an arithmetic overflow.
     let key = [1, 2, 3, 4];
@@ -19,7 +19,7 @@ fn test_apply_mask_with_any_offset_does_not_overflow() {
 }
 
 #[test]
-fn test_commit_and_advance_output_saturate() {
+fn test_commit_and_advance_huge_counts_saturate() {
     let mut conn = Connection::server();
     let _ = conn.read_buf();
     conn.commit(1);
@@ -34,7 +34,7 @@ fn test_commit_and_advance_output_saturate() {
 }
 
 #[test]
-fn test_usage_errors_do_not_report_a_close_code() {
+fn test_usage_errors_no_close_code() {
     // A refused call leaves the connection open, so it must not look like
     // a connection failure to a caller that checks `close_code()`.
     let mut conn = Connection::server();
@@ -52,7 +52,7 @@ fn test_usage_errors_do_not_report_a_close_code() {
 }
 
 #[test]
-fn test_unanswered_pings_do_not_grow_the_output() {
+fn test_ping_flood_unread_output_bounded() {
     // A peer that sends Pings but never reads our output must not make the
     // output queue grow: only the latest automatic Pong stays unsent.
     let mut conn = Connection::server();
@@ -68,7 +68,7 @@ fn test_unanswered_pings_do_not_grow_the_output() {
 }
 
 #[test]
-fn test_pong_after_user_frame_is_not_overwritten() {
+fn test_pong_behind_user_frame_kept() {
     // Replacing an unsent Pong is only allowed while it is the last thing
     // queued; a Pong behind a data frame must stay in order.
     let mut conn = Connection::server();
@@ -90,7 +90,7 @@ fn test_pong_after_user_frame_is_not_overwritten() {
 }
 
 #[test]
-fn test_huge_limits_do_not_reserve_announced_length() {
+fn test_reserve_lifted_budgets_capped_at_one_mib() {
     // With the budgets lifted, a header announcing 1 TiB must not make the
     // connection reserve 1 TiB up front (an allocation failure aborts the
     // process). Memory follows the bytes that actually arrive.
@@ -107,7 +107,7 @@ fn test_huge_limits_do_not_reserve_announced_length() {
 }
 
 #[test]
-fn test_header_announcing_maximum_length_fails_before_payload() {
+fn test_budget_maximum_length_header_fails_before_payload() {
     // 2^63 - 1 bytes announced: refused from the header alone.
     let mut wire = vec![0x82, 0x80 | 127];
     wire.extend_from_slice(&(i64::MAX as u64).to_be_bytes());

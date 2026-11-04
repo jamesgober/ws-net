@@ -986,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn test_accept_key_rfc_example() {
+    fn test_accept_key_rfc_sample_matches() {
         assert_eq!(
             accept_key(b"dGhlIHNhbXBsZSBub25jZQ==").as_str(),
             "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
@@ -998,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn test_server_rejections() {
+    fn test_server_invalid_requests_refused() {
         let ok = rfc_headers();
         assert!(ServerHandshake::from_request("GET", "/", ok).is_ok());
         assert_eq!(
@@ -1087,7 +1087,7 @@ mod tests {
     }
 
     #[test]
-    fn test_server_lists_follow_rfc_9110() {
+    fn test_server_lists_rfc9110_quote_aware() {
         let with = |name: &'static str, value: &'static [u8]| {
             let mut h: Vec<(&str, &[u8])> = rfc_headers().to_vec();
             h.push((name, value));
@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn test_client_verify_rules() {
+    fn test_client_verify_each_rule_enforced() {
         let client = ClientHandshake::with_nonce(*b"the sample nonce").with_protocols(&["chat"]);
         let good: [(&str, &[u8]); 4] = [
             ("Upgrade", b"WebSocket"),

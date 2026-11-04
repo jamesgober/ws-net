@@ -1262,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn test_streamed_message_and_fast_path_agree() {
+    fn test_receive_streamed_and_fast_path_same_events() {
         let frame = masked(0x1, true, "κόσμε".as_bytes());
         let mut whole = Connection::server();
         let _ = whole.feed(&frame);
@@ -1279,7 +1279,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_fragments_and_messages() {
+    fn test_fragments_empty_pieces_delivered() {
         let mut conn = Connection::server();
         let mut wire = masked(0x1, false, b"");
         wire.extend(masked(0x0, false, b""));
@@ -1292,7 +1292,7 @@ mod tests {
     }
 
     #[test]
-    fn test_send_side_state_errors() {
+    fn test_send_wrong_state_refused() {
         let mut conn = Connection::server();
         conn.send_text_fragment("a", false).unwrap();
         assert!(matches!(conn.send_text("b"), Err(WsError::InvalidState(_))));
@@ -1319,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn test_outgoing_messages_split_at_frame_limit() {
+    fn test_send_over_send_frame_split_into_frames() {
         let mut conn = Connection::server().with_limits(Limits::new().with_max_frame(200));
         conn.send_binary(&vec![7u8; 450]).unwrap();
         let out = conn.output().to_vec();
@@ -1342,7 +1342,7 @@ mod tests {
     }
 
     #[test]
-    fn test_output_advance_and_compaction() {
+    fn test_output_advance_compacts_written_prefix() {
         let mut conn = Connection::server();
         for _ in 0..100 {
             conn.send_binary(&[0u8; 1000]).unwrap();
@@ -1355,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn test_only_latest_ping_is_answered() {
+    fn test_pong_unwritten_replaced_by_latest() {
         let mut conn = Connection::server();
         let mut wire = masked(0x9, true, b"one");
         wire.extend(masked(0x9, true, b"two"));
@@ -1366,7 +1366,7 @@ mod tests {
     }
 
     #[test]
-    fn test_large_message_buffer_is_released() {
+    fn test_reassembly_large_buffer_released_after_delivery() {
         let mut conn = Connection::server();
         // Two 1 MiB fragments plus one byte: the reassembly buffer grows
         // past MSG_RETAIN and must be released after delivery.

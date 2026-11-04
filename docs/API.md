@@ -1,9 +1,11 @@
-# ws-net &mdash; API Reference
+# ws-net - API Reference
 
 > Complete reference for every public item in `ws-net`, with examples.
-> **Status: pre-1.0 (0.2.0).** The surface is designed across the 0.x series
-> and frozen at `1.0.0`, after LexerSketch Studio ships on it. See
-> [`../dev/ROADMAP.md`](../dev/ROADMAP.md).
+> **Status: pre-1.0 (0.3.0), design locked.** Every item of the 1.0 surface
+> is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
+> lands in; items marked shipped are documented in full below. The surface is
+> frozen at `1.0.0`, after LexerSketch Studio ships on it. See
+> [`../dev/ROADMAP.md`](../dev/ROADMAP.md) and [`../dev/PLAN.md`](../dev/PLAN.md).
 
 <sub>Copyright &copy; 2026 <strong>James Gober</strong>.</sub>
 
@@ -12,6 +14,7 @@
 - [Overview](#overview)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Tier 1: `accept` and `Acceptor`](#tier-1-accept-and-acceptor)
 - [Concepts](#concepts)
   - [The I/O loop](#the-io-loop)
   - [Failures and refused calls](#failures-and-refused-calls)
@@ -36,6 +39,9 @@
 - [`CloseFrame`](#closeframe)
 - [`WsError`](#wserror)
 - [`ServerHandshake`](#serverhandshake)
+- [`AcceptPolicy` and `Decision`](#acceptpolicy-and-decision)
+- [`OriginPolicy`](#originpolicy)
+- [`HeadReader`](#headreader)
 - [`ClientHandshake`](#clienthandshake)
 - [`HandshakeError`](#handshakeerror)
 - [`accept_key` and `AcceptKey`](#accept_key-and-acceptkey)
@@ -45,6 +51,7 @@
   - [`apply_mask`](#apply_mask)
 - [Feature flags](#feature-flags)
 - [Limits reference](#limits-reference)
+- [The 1.0 API (design lock)](#the-10-api-design-lock)
 
 ## Overview
 
@@ -55,6 +62,10 @@ async runtime, a test harness, or memory.
 
 | Item | Kind | Purpose |
 |---|---|---|
+| [`accept`, `Acceptor`, `Accepted`](#tier-1-accept-and-acceptor) | fn, struct | Tier 1: accept a WebSocket from a socket's first bytes, with the same-origin policy. |
+| [`AcceptPolicy`, `Decision`](#acceptpolicy-and-decision) | struct | Who may connect, which subprotocol is spoken, the connection's limits. |
+| [`OriginPolicy`](#originpolicy) | enum | Which pages may connect (cross-site WebSocket hijacking defense). |
+| [`HeadReader`](#headreader) | struct | A resumable raw head reader with linear total work. |
 | [`Connection`](#connection) | struct | One WebSocket connection after the handshake. |
 | [`Event`](#event) | enum | What [`poll`](#connectionpoll) found: a message, a control frame, or a need. |
 | [`Limits`](#limits) | struct | Frame and message budgets. |
@@ -68,37 +79,35 @@ async runtime, a test harness, or memory.
 | [`HandshakeError`](#handshakeerror) | enum | Why a handshake was refused. |
 | [`accept_key`, `AcceptKey`](#accept_key-and-acceptkey) | fn, struct | The `Sec-WebSocket-Accept` computation. |
 | [`frame::Opcode`, `frame::FrameHeader`, `frame::apply_mask`](#the-frame-module) | module | The raw frame codec. |
+| `VERSION` | const | The crate version. |
 
 ## Installation
 
 ```toml
 [dependencies]
-ws-net = "0.2"
+ws-net = "0.3"
 
 # no_std (alloc only)
-ws-net = { version = "0.2", default-features = false }
+ws-net = { version = "0.3", default-features = false }
 ```
 
 ## Quick start
 
-A server: validate the upgrade request from raw bytes, answer `101`, then
-echo the first message.
+A server: accept the upgrade from the socket's first bytes (validated, the
+same-origin policy applied, the `101` written), then echo the first message.
 
 ```rust
-use ws_net::{Connection, Event, ServerHandshake};
+use ws_net::Event;
 
 let mut wire = b"GET /chat HTTP/1.1\r\nHost: server.example.com\r\n\
-    Upgrade: websocket\r\nConnection: Upgrade\r\n\
+    Upgrade: websocket\r\nConnection: Upgrade\r\nOrigin: https://server.example.com\r\n\
     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n".to_vec();
 // A masked "Hello" (RFC 6455 section 5.7) right behind the head.
 wire.extend_from_slice(&[0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58]);
 
-let (handshake, head_len) = ServerHandshake::from_head(&wire)?.expect("complete head");
-let mut response = Vec::new();
-handshake.write_response(None, &mut response)?; // write this to the socket
-
-let mut conn = Connection::server();
-let _ = conn.feed(&wire[head_len..]);
+let mut accepted = ws_net::accept(&wire)?.expect("complete head");
+// Write `accepted.response` (the 101) to the socket, then drive the connection.
+let conn = &mut accepted.connection;
 let reply = match conn.poll()? {
     Event::Text(text) => text.to_uppercase(),
     other => panic!("{other:?}"),
@@ -106,6 +115,75 @@ let reply = match conn.poll()? {
 conn.send_text(&reply)?;
 assert_eq!(conn.output(), [0x81, 0x05, b'H', b'E', b'L', b'L', b'O']);
 # Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+## Tier 1: `accept` and `Acceptor`
+
+```rust,ignore
+pub fn accept(bytes: &[u8]) -> Result<Option<Accepted>, HandshakeError>;
+
+pub struct Acceptor { /* private */ }
+impl Acceptor {
+    pub fn new() -> Acceptor;                               // the Tier 1 policy
+    pub fn with_policy(policy: AcceptPolicy) -> Acceptor;   // Tier 2
+    pub fn accept(&mut self, bytes: &[u8]) -> Result<Option<Accepted>, HandshakeError>;
+}
+
+#[non_exhaustive]
+pub struct Accepted {
+    pub response: Vec<u8>,          // the 101, to write first
+    pub connection: Connection,     // the server end, already fed
+    pub consumed: usize,            // input bytes used: head plus frames fed
+    pub handshake: ServerHandshake, // the request, for routing on its target
+}
+```
+
+`accept` takes a buffer that starts with the request head. Until the head
+is complete it returns `Ok(None)`: read more, append, call again. Then it
+validates the request (every rule of [`from_head`](#serverhandshake)),
+applies the same-origin policy ([`AcceptPolicy::new`](#acceptpolicy-and-decision)),
+writes the `101`, builds a server [`Connection`](#connection) with the
+policy's limits, and feeds it the bytes that followed the head. A
+connection takes at most its input buffer (64 KiB) per call, so a large
+leftover is only partly taken: feed `bytes[consumed..]` after polling.
+
+`accept` rescans the head on each call. An `Acceptor` is the resumable
+form: pass it the same buffer each time, grown at the end, and each byte of
+the head is scanned once over all calls, however small the reads (see
+[`HeadReader`](#headreader)). One `Acceptor` accepts one connection.
+
+**Errors.** Every [`HandshakeError`](#handshakeerror) of `from_head`, plus
+`OriginRefused` (403) and, with a policy that requires one,
+`ProtocolRequired`. Answer with `HandshakeError::write_response` and close
+the transport. `Acceptor::accept` also returns `InvalidRequest` when the
+buffer shrank between calls.
+
+```rust
+use ws_net::{AcceptPolicy, Acceptor, HandshakeError, OriginPolicy};
+
+let request = b"GET / HTTP/1.1\r\nHost: api.example\r\nUpgrade: websocket\r\n\
+    Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+    Sec-WebSocket-Version: 13\r\nOrigin: https://app.example\r\n\r\n";
+
+// The default policy is same-origin: this page is on another host.
+let refused = ws_net::accept(request).unwrap_err();
+assert_eq!((refused, refused.status()), (HandshakeError::OriginRefused, 403));
+
+// Allow the application's page; read the head in 5-byte pieces.
+let policy = AcceptPolicy::new().with_origins(OriginPolicy::allow(&["https://app.example"])?);
+let mut acceptor = Acceptor::with_policy(policy);
+let mut buffer = Vec::new();
+let mut accepted = None;
+for piece in request.chunks(5) {
+    buffer.extend_from_slice(piece);
+    if let Some(a) = acceptor.accept(&buffer)? {
+        accepted = Some(a);
+    }
+}
+let accepted = accepted.expect("complete");
+assert_eq!(accepted.consumed, request.len());
+assert!(accepted.response.starts_with(b"HTTP/1.1 101 Switching Protocols\r\n"));
+# Ok::<(), HandshakeError>(())
 ```
 
 ## Concepts
@@ -202,21 +280,35 @@ reported but not answered. The server closes the TCP connection first
 
 ### Handshake policy: Host, Origin, subprotocols
 
-The crate validates the protocol; the policy is yours. A
-[`ServerHandshake`](#serverhandshake) exposes:
+A browser attaches the user's cookies to a WebSocket request from any page
+on any site. Without an Origin check, a page on another site can open a
+socket to this server as the user (cross-site WebSocket hijacking,
+CWE-1385). Browsers always send `Origin`, and a page cannot change it, so
+checking it is the defense.
 
-- [`host`](#serverhandshake): compare it with your own authority to defeat
-  DNS rebinding.
-- [`origin`](#serverhandshake): compare it with the pages allowed to connect
-  to defeat cross-site WebSocket hijacking (browsers always send it). A
-  request with two `Origin` fields is refused outright.
-- [`protocols`](#serverhandshake): the subprotocols offered, in the client's
-  order of preference. Choose one (or none) in
-  [`write_response`](#serverhandshake); choosing one that was not offered
-  is refused. The client side refuses a response that selects a protocol
-  it did not offer, or more than one. Extensions are never negotiated.
+- The Tier 1 path ([`accept`](#tier-1-accept-and-acceptor), `Acceptor::new`)
+  applies the **same-origin rule**: the Origin's host and port must be the
+  request's `Host`. A request without `Origin` comes from a non-browser
+  client, which carries no ambient browser credentials, and is accepted;
+  `OriginPolicy::same_origin().allow_missing(false)` refuses it.
+- [`OriginPolicy::allow`](#originpolicy) pins exact serialized origins,
+  scheme included. Comparison is by parsed origin, never by substring:
+  `https://example.com.evil.net` is not `https://example.com`, and `null`
+  never matches.
+- [`OriginPolicy::any_origin`](#originpolicy) turns the check off, for
+  endpoints that use no cookies or HTTP authentication.
+- A request with two `Origin` (or two `Host`) fields is refused outright
+  (`InvalidOrigin`, `InvalidHost`): a check could read one and a later
+  layer trust the other.
+- Subprotocols: [`AcceptPolicy::with_protocols`](#acceptpolicy-and-decision)
+  lists the server's, in its order of preference; the first one the client
+  offered is selected, and `require_protocol` refuses a client that offered
+  none. `ServerHandshake::select_protocol` is the same choice without a
+  policy. Extensions are not negotiated in 0.3 (from 0.4).
 
-Refuse a policy failure with `HTTP/1.1 403 Forbidden`.
+A refused Origin is `HandshakeError::OriginRefused`, answered with
+`HTTP/1.1 403 Forbidden`. Host allowlists (DNS rebinding) land in 0.4; until
+then compare [`host()`](#serverhandshake) with your own authority.
 
 ### Behind an HTTP layer
 
@@ -277,7 +369,8 @@ machine. All methods are synchronous and never block.
 | Method | Description |
 |---|---|
 | `Connection::server() -> Connection` | The accepting end. Refuses unmasked frames; sends unmasked. |
-| `Connection::client() -> Connection` | The connecting end, masking keys from the OS random source. Feature `std`. |
+| `Connection::client() -> Connection` | The connecting end, masking keys from a seed drawn from the OS cryptographic random source (through `mod-rand`). If that source fails it fails closed: the connection is `Closed` and every send returns `RandomUnavailable`. Feature `std`. |
+| `Connection::try_client() -> Result<Connection, WsError>` | As `client`, returning `WsError::RandomUnavailable` when the OS source fails. Feature `std`. |
 | `Connection::client_with_seed(seed: [u8; 32]) -> Connection` | The connecting end, masking keys derived from a 32-byte secret seed. The seed must be unpredictable to the peer (RFC 6455 section 5.3); a fixed seed is for tests. |
 | `Connection::with_limits(self, limits: Limits) -> Connection` | Replaces the [budgets](#limits). |
 
@@ -403,18 +496,24 @@ assert_eq!(conn.output(), b"bc");
 ```
 
 <a id="accessors"></a>
-### Accessors: `limits`, `role`, `state`
+### Accessors: `limits`, `role`, `state`, `is_open`, `can_send`
 
 | Method | Returns |
 |---|---|
 | `limits(&self) -> &Limits` | The budgets. |
 | `role(&self) -> Role` | Server or client. |
 | `state(&self) -> State` | Open, Closing, or Closed. |
+| `is_open(&self) -> bool` | `state() == State::Open`. |
+| `can_send(&self) -> bool` | Whether a new data message would be accepted now: no Close sent, not failed, no fragmented message being sent. |
 
 ```rust
 use ws_net::{Connection, Limits, Role, State};
-let conn = Connection::server();
+let mut conn = Connection::server();
 assert_eq!((conn.role(), conn.state(), *conn.limits()), (Role::Server, State::Open, Limits::new()));
+assert!(conn.is_open() && conn.can_send());
+conn.send_binary_fragment(b"part", false)?;
+assert!(conn.is_open() && !conn.can_send());
+# Ok::<(), ws_net::WsError>(())
 ```
 
 ## `Event`
@@ -461,8 +560,9 @@ pub struct Limits { /* private */ }
 ```
 
 Budgets on incoming frames and messages, checked from frame headers.
-Outgoing messages larger than the frame budget are split into frames of
-that size, so a peer with the same limits accepts them.
+Outgoing messages are split into frames of at most `send_frame` bytes, which
+follows the frame budget unless set, so a peer with the same limits accepts
+them.
 
 | Method | Description |
 |---|---|
@@ -471,6 +571,8 @@ that size, so a peer with the same limits accepts them.
 | `with_max_message(self, bytes: u64) -> Limits` | The largest message, summed over its fragments. |
 | `max_frame(&self) -> u64` | The frame budget. |
 | `max_message(&self) -> u64` | The message budget. |
+| `with_send_frame(self, bytes: u64) -> Limits` | The largest outgoing frame payload, at least 125. Unset, it equals `max_frame`. |
+| `send_frame(&self) -> u64` | The outgoing frame size. |
 
 ```rust
 use ws_net::{Connection, Limits, WsError};
@@ -481,6 +583,11 @@ let mut conn = Connection::server().with_limits(limits);
 // A masked binary frame announcing 200 bytes: refused from the header.
 let _ = conn.feed(&[0x82, 0xFE, 0x00, 0xC8, 1, 2, 3, 4]);
 assert_eq!(conn.poll().unwrap_err(), WsError::FrameTooLarge);
+
+// Accept 1 MiB frames, send 16 KiB ones.
+let mut conn = Connection::server().with_limits(Limits::new().with_send_frame(16 * 1024));
+conn.send_binary(&vec![0; 40 * 1024]).unwrap();
+assert_eq!(conn.output()[0], 0x02); // first frame: binary, not final
 ```
 
 ## `Role`
@@ -600,6 +707,7 @@ impl core::error::Error for WsError {}
 | `UnexpectedEof` | The transport closed before the closing handshake completed. | 1006 (never sent) |
 | `InvalidArgument(&'static str)` | A refused call: an argument the protocol does not allow. The text names the rule. | `None` |
 | `InvalidState(&'static str)` | A refused call made in the wrong state. The text names the rule. | `None` |
+| `RandomUnavailable` | A refused call: this client has no masking keys, because the OS random source failed when `Connection::client` ran. Use `try_client`. | `None` |
 
 `close_code()` is the failure's status code, or `None` for a refused call,
 which leaves the connection unchanged. The enum is `#[non_exhaustive]`.
@@ -624,6 +732,7 @@ A validated opening request (RFC 6455 section 4.2.1), ready to be accepted.
 | Item | Description |
 |---|---|
 | `ServerHandshake::MAX_HEAD: usize` | 16 KiB: the largest head `from_head` (and `ClientHandshake::verify_head`) accepts. |
+| `ServerHandshake::MAX_PROTOCOLS: usize` | 64: the most subprotocols accepted from one request. |
 | `from_head(bytes: &[u8]) -> Result<Option<(ServerHandshake, usize)>, HandshakeError>` | Validates a request from its raw bytes. `Ok(None)` until the blank line ending the head arrives; then the handshake and the head's length (bytes after it are the first frames). |
 | `from_request(method: &str, target: &str, headers: impl IntoIterator<Item = (&str, &[u8])>) -> Result<ServerHandshake, HandshakeError>` | Validates a request an HTTP layer has parsed. |
 | `accept_key(&self) -> &AcceptKey` | The `Sec-WebSocket-Accept` value. |
@@ -631,6 +740,8 @@ A validated opening request (RFC 6455 section 4.2.1), ready to be accepted.
 | `host(&self) -> &str` | The `Host` field. |
 | `origin(&self) -> Option<&str>` | The `Origin` field, if sent. |
 | `protocols(&self) -> impl Iterator<Item = &str>` | The offered subprotocols, in preference order. |
+| `select_protocol<'p>(&self, preference: &[&'p str]) -> Option<&'p str>` | The first of the server's protocols that the client offered (exact, case-sensitive). |
+| `accept(&self, policy: &AcceptPolicy, out: &mut Vec<u8>) -> Result<Connection, HandshakeError>` | Applies the policy, appends the `101`, returns the server connection with the policy's limits. Nothing is written on a refusal. |
 | `write_response(&self, protocol: Option<&str>, out: &mut Vec<u8>) -> Result<(), HandshakeError>` | Appends the complete `101` response, selecting `protocol` or none. |
 
 **What is checked.** The method is `GET`; the target is visible ASCII;
@@ -638,17 +749,24 @@ exactly one `Host` (visible ASCII); `Upgrade` lists `websocket` and
 `Connection` lists `upgrade`, case-insensitively, in any field of that name;
 exactly one `Sec-WebSocket-Version`, equal to `13`; exactly one
 `Sec-WebSocket-Key`, the canonical base64 of 16 bytes; at most one `Origin`
-(visible ASCII); every offered subprotocol a token, at most 64.
+(visible ASCII); every offered subprotocol a token, at most 64; no body
+(no `Transfer-Encoding`, no `Content-Length` other than `0`), because the
+bytes after the head are the first frames and a front proxy that read a
+body would disagree about where they start. Comma lists follow RFC 9110
+through `parse-net`: a comma inside a quoted string does not split, and a
+value that is not a valid list holds nothing.
 `from_head` also checks the HTTP/1.1 syntax strictly: CRLF line endings (a
 bare CR or LF is refused as soon as it arrives), `METHOD SP target SP
 HTTP/1.1`, token field names with no whitespace before the colon, no line
 folding, no control bytes in values, and at most `MAX_HEAD` bytes. Each
-call scans at most `MAX_HEAD` bytes, so calling it again after every read
-costs bounded work per read.
+call scans the buffer from the start; for a head read in many pieces use
+[`HeadReader`](#headreader) or an [`Acceptor`](#tier-1-accept-and-acceptor),
+which scan each byte once.
 
 **Errors.** `NotGet`, `MalformedHead`, `HeadTooLarge`, `InvalidHost`,
 `MissingUpgrade`, `MissingConnectionUpgrade`, `UnsupportedVersion`,
-`MissingKey`, `InvalidKey`, `InvalidOrigin`, `InvalidProtocol` (see
+`MissingKey`, `InvalidKey`, `InvalidOrigin`, `InvalidProtocol`,
+`UnexpectedBody` (see
 [`HandshakeError`](#handshakeerror)); `write_response` returns
 `InvalidProtocol` for a protocol that was not offered.
 
@@ -682,6 +800,149 @@ assert_eq!(ServerHandshake::from_request("GET", "/rpc", fields)?, hs);
 # Ok::<(), HandshakeError>(())
 ```
 
+## `AcceptPolicy` and `Decision`
+
+```rust,ignore
+#[non_exhaustive]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AcceptPolicy { /* private */ }
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Decision<'a> { pub protocol: Option<&'a str> }
+```
+
+| Method | Description |
+|---|---|
+| `AcceptPolicy::new() -> AcceptPolicy` / `default()` | The Tier 1 policy: same-origin (a missing Origin accepted), no subprotocol, default `Limits`. |
+| `with_origins(self, origins: OriginPolicy) -> AcceptPolicy` | The Origin rule. |
+| `with_protocols(self, preference: &[&str]) -> Result<AcceptPolicy, HandshakeError>` | The server's subprotocols in preference order; `InvalidProtocol` for a non-token. |
+| `require_protocol(self) -> AcceptPolicy` | Refuse a client that offers none of them (`ProtocolRequired`). |
+| `with_limits(self, limits: Limits) -> AcceptPolicy` | The limits of accepted connections. |
+| `origins(&self) -> &OriginPolicy`, `limits(&self) -> &Limits` | Accessors. |
+| `check<'h>(&self, handshake: &'h ServerHandshake) -> Result<Decision<'h>, HandshakeError>` | The decision without writing anything, for an HTTP layer that writes its own `101`. `OriginRefused` or `ProtocolRequired`. |
+
+```rust
+use ws_net::{AcceptPolicy, HandshakeError, OriginPolicy, ServerHandshake};
+
+let fields = [
+    ("Host", &b"api.example"[..]), ("Upgrade", b"websocket"), ("Connection", b"Upgrade"),
+    ("Sec-WebSocket-Version", b"13"), ("Sec-WebSocket-Key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+    ("Origin", b"https://app.example"), ("Sec-WebSocket-Protocol", b"rpc.v1, rpc.v2"),
+];
+let handshake = ServerHandshake::from_request("GET", "/rpc", fields)?;
+let policy = AcceptPolicy::new()
+    .with_origins(OriginPolicy::allow(&["https://app.example"])?)
+    .with_protocols(&["rpc.v2", "rpc.v1"])?;
+assert_eq!(policy.check(&handshake)?.protocol, Some("rpc.v2")); // server's order wins
+
+let mut out = Vec::new();
+let conn = handshake.accept(&policy, &mut out)?;
+assert!(out.ends_with(b"sec-websocket-protocol: rpc.v2\r\n\r\n"));
+assert!(conn.is_open());
+
+let other = AcceptPolicy::new().with_protocols(&["chat"])?.require_protocol();
+assert_eq!(other.check(&handshake), Err(HandshakeError::OriginRefused));
+# Ok::<(), HandshakeError>(())
+```
+
+## `OriginPolicy`
+
+```rust,ignore
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OriginPolicy {
+    SameOrigin { allow_missing: bool },
+    AllowList { origins: Vec<String>, allow_missing: bool },
+    Any,
+}
+```
+
+| Item | Description |
+|---|---|
+| `OriginPolicy::same_origin() -> OriginPolicy` / `default()` | The Origin's host and port must be the request's `Host` (scheme not compared). A missing Origin is accepted. |
+| `OriginPolicy::allow(origins: &[&str]) -> Result<OriginPolicy, HandshakeError>` | Exact serialized origins, each `http` or `https` with a host and optional port, no path, query, userinfo, trailing slash, or surrounding space; `InvalidRequest` otherwise. |
+| `OriginPolicy::any_origin() -> OriginPolicy` | Every Origin. Loud on purpose. |
+| `allow_missing(self, allow: bool) -> OriginPolicy` | Whether a request without `Origin` is accepted (no effect on `Any`). |
+| `permits(&self, origin: Option<&str>, host: &str) -> bool` | The check. Fails closed: an Origin or Host that does not parse is refused. |
+
+Origins are compared as RFC 6454 serialized origins (through `parse-net`):
+scheme and host ASCII case-insensitively, IP literals by value, ports after
+the scheme's default (80, 443) is filled in. Never by prefix, suffix, or
+substring. `null` never matches, nor does a scheme other than `http` or
+`https`. Under `SameOrigin`, a `Host` without a port matches an Origin on
+its scheme's default port, and a `Host` with a port matches an Origin whose
+effective port is that port.
+
+```rust
+use ws_net::OriginPolicy;
+
+let list = OriginPolicy::allow(&["https://example.com"])?;
+for evil in ["https://example.com.evil.net", "https://evilexample.com",
+             "https://example.com@evil.net", "http://example.com", "null"] {
+    assert!(!list.permits(Some(evil), "example.com"), "{evil}");
+}
+assert!(list.permits(Some("HTTPS://EXAMPLE.COM:443"), "example.com"));
+
+let same = OriginPolicy::same_origin();
+assert!(same.permits(Some("http://127.0.0.1:8080"), "127.0.0.1:8080"));
+assert!(!same.permits(Some("http://127.0.0.1:8080"), "127.0.0.1:9090"));
+assert!(same.permits(None, "127.0.0.1:8080"));
+assert!(!same.allow_missing(false).permits(None, "127.0.0.1:8080"));
+# Ok::<(), ws_net::HandshakeError>(())
+```
+
+## `HeadReader`
+
+```rust,ignore
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct HeadReader { /* private */ }
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Verified<'a> { pub protocol: Option<&'a str> }
+```
+
+| Method | Description |
+|---|---|
+| `HeadReader::new() -> HeadReader` | A reader at the start of a head. |
+| `server(&mut self, bytes: &[u8]) -> Result<Option<(ServerHandshake, usize)>, HandshakeError>` | As `ServerHandshake::from_head`, resuming where the last call stopped. |
+| `client<'c>(&mut self, handshake: &'c ClientHandshake, bytes: &[u8]) -> Result<Option<(Verified<'c>, usize)>, HandshakeError>` | As `ClientHandshake::verify_head`, resuming. |
+| `reset(&mut self)` | Start over for the next head. |
+
+`from_head` and `verify_head` scan the whole buffer on every call, so a peer
+that sends its head one byte per read makes them do quadratic work: up to
+about 134 million byte visits for a 16 KiB head (the class of
+CVE-2023-43669). A `HeadReader` keeps its scan position: pass the same
+buffer each time, grown at the end, and the total work is linear in the
+head. A buffer shorter than what was already scanned is `InvalidRequest`.
+
+```rust
+use ws_net::{ClientHandshake, HeadReader, ServerHandshake};
+
+let client = ClientHandshake::with_nonce(*b"the sample nonce");
+let mut request = Vec::new();
+client.write_request("a.example", "/", &mut request)?;
+
+let mut reader = HeadReader::new();
+let mut buffer = Vec::new();
+let mut found = None;
+for &byte in &request {
+    buffer.push(byte); // one byte per read
+    if let Some(f) = reader.server(&buffer)? {
+        found = Some(f);
+    }
+}
+let (server, len) = found.expect("complete");
+assert_eq!(len, request.len());
+
+let mut response = Vec::new();
+server.write_response(None, &mut response)?;
+let (verified, _) = HeadReader::new().client(&client, &response)?.expect("complete");
+assert_eq!(verified.protocol, None);
+# Ok::<(), ws_net::HandshakeError>(())
+```
+
 ## `ClientHandshake`
 
 ```rust,ignore
@@ -694,7 +955,8 @@ The client side: the request to send, and the check of the response.
 
 | Item | Description |
 |---|---|
-| `ClientHandshake::new() -> ClientHandshake` | A fresh random nonce from the OS. Feature `std`. |
+| `ClientHandshake::new() -> ClientHandshake` | A fresh 16-byte nonce from the OS cryptographic random source. If that source fails it fails closed: `write_request` returns `RandomUnavailable`. Feature `std`. |
+| `ClientHandshake::try_new() -> Result<ClientHandshake, HandshakeError>` | As `new`, returning `RandomUnavailable` when the OS source fails. Feature `std`. |
 | `with_nonce(nonce: [u8; 16]) -> ClientHandshake` | A caller-chosen nonce (RFC 6455 requires it to be random per connection). |
 | `with_protocols(self, protocols: &[&str]) -> ClientHandshake` | Offers subprotocols, in preference order. |
 | `with_origin(self, origin: &str) -> ClientHandshake` | Sends an `Origin` field, as browsers do. |
@@ -757,6 +1019,10 @@ impl core::error::Error for HandshakeError {}
 | `MissingKey` | No `Sec-WebSocket-Key`, or more than one. | 400 |
 | `InvalidKey` | The key is not the canonical base64 of 16 bytes. | 400 |
 | `UnsupportedVersion` | `Sec-WebSocket-Version` missing, repeated, or not `13`. | 426 |
+| `UnexpectedBody` | The upgrade request declares a body: `Transfer-Encoding`, or `Content-Length` other than `0` (request smuggling defense). | 400 |
+| `OriginRefused` | The policy refused the `Origin` (or its absence). | 403 |
+| `ProtocolRequired` | The policy requires a subprotocol and none of the server's was offered. | 400 |
+| `RandomUnavailable` | Client side: the OS random source failed, so no nonce exists; nothing was written. | 500 (not answered) |
 | `InvalidProtocol` | A subprotocol that is not a token, more than 64, or a selection not offered. | 400 |
 | `NotSwitching(u16)` | Client side: the status was not 101. | 400 |
 | `AcceptMismatch` | Client side: `Sec-WebSocket-Accept` missing, repeated, or wrong. | 400 |
@@ -816,6 +1082,7 @@ pub enum Opcode { Continuation, Text, Binary, Close, Ping, Pong }
 | `Opcode::from_u8(value: u8) -> Option<Opcode>` | The opcode for a 4-bit value; `None` for reserved values. |
 | `as_u8(&self) -> u8` | The wire value. |
 | `is_control(&self) -> bool` | Close, Ping, or Pong. |
+| `is_data(&self) -> bool` | Text, Binary, or Continuation. |
 
 ```rust
 use ws_net::frame::Opcode;
@@ -823,6 +1090,16 @@ assert_eq!(Opcode::from_u8(0x9), Some(Opcode::Ping));
 assert_eq!(Opcode::from_u8(0xB), None);
 assert_eq!(Opcode::Close.as_u8(), 0x8);
 assert!(Opcode::Pong.is_control() && !Opcode::Text.is_control());
+assert!(Opcode::Continuation.is_data());
+```
+
+Constants: `frame::MAX_HEADER_LEN` (14), `frame::MAX_CONTROL_PAYLOAD` (125),
+`frame::MAX_PAYLOAD_LEN` (2^63 - 1).
+
+```rust
+use ws_net::frame::{FrameHeader, MAX_CONTROL_PAYLOAD, MAX_HEADER_LEN, MAX_PAYLOAD_LEN, Opcode};
+let h = FrameHeader::new(Opcode::Binary, true, MAX_PAYLOAD_LEN).with_mask([0; 4]);
+assert_eq!((h.encoded_len(), MAX_CONTROL_PAYLOAD), (MAX_HEADER_LEN, 125));
 ```
 
 ### `FrameHeader`
@@ -895,7 +1172,11 @@ assert_eq!(&data, b"Hello");
 
 | Feature | Default | Description |
 |---|---|---|
-| `std` | yes | OS-seeded masking keys and handshake nonces: `Connection::client`, `ClientHandshake::new`, `ClientHandshake: Default`. Without it the crate is `no_std` + `alloc`; clients use `Connection::client_with_seed` and `ClientHandshake::with_nonce`. |
+| `std` | yes | Masking-key seeds and handshake nonces from the OS cryptographic random source through `mod-rand` (first party, no dependencies): `Connection::client`, `try_client`, `ClientHandshake::new`, `try_new`, `ClientHandshake: Default`. Without it the crate is `no_std` + `alloc` and clients take a seed (`client_with_seed`, `with_nonce`), which must come from a cryptographic source. |
+
+Dependencies: `parse-net` (always; the shared RFC 9110 grammar, no
+allocator, no dependencies of its own) and `mod-rand` (feature `std`). No
+third-party runtime dependency.
 
 ## Limits reference
 
@@ -909,3 +1190,60 @@ assert_eq!(&data, b"Hello");
 | Reassembly reserved ahead of arrived bytes | 1 MiB | [Budgets and memory](#budgets-and-memory) |
 | Handshake head | 16 KiB | [`ServerHandshake::MAX_HEAD`](#serverhandshake) |
 | Offered subprotocols | 64 | [`ServerHandshake`](#serverhandshake) |
+
+## The 1.0 API (design lock)
+
+The whole surface planned for 1.0, with the version each item lands in.
+Shipped items are documented above; planned ones are fixed in name, shape,
+and behaviour here, so consumers can design against them. Requirement and
+item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
+
+**Tier 1** (the common case): `accept`, `Acceptor::new`, `Connection::server`,
+`Connection::client`, `feed`, `poll`, `send_text`, `send_binary`, `send`,
+`close`, `output`, `advance_output`, `feed_eof`, `is_open`,
+`should_close_transport`, `Event`, `Message`, `ClientHandshake::new` +
+`write_request` + `verify_head`, `blocking::accept`, `blocking::connect`,
+`blocking::WebSocket::{read, send_text, send_binary, close}`.
+
+| Item | Version |
+|---|---|
+| `Connection`: `server`, `client`, `client_with_seed`, `with_limits`, `limits`, `role`, `state`, `feed`, `read_buf`, `commit`, `feed_eof`, `poll`, `send_text`, `send_binary`, `send_text_fragment`, `send_binary_fragment`, `send_ping`, `send_pong`, `close`, `output`, `advance_output` | 0.2 |
+| `Connection::try_client`, `is_open`, `can_send` | 0.3 |
+| `Connection::with_keepalive(Keepalive)`, `on_time(Millis) -> Result<Tick, WsError>`, `next_deadline() -> Option<Millis>` | 0.4 |
+| `Connection::should_close_transport`, `buffered_output`, `release_memory`, `memory_in_use`, `wipe`, `stats() -> Stats` | 0.4 |
+| `Connection::poll_split() -> Result<(Event, Sender), WsError>`, `Sender` (`send_text`, `send_binary`, `send_ping`, `send_pong`, `close`, `send_prepared`) | 0.4 |
+| `Connection::detach_message(&mut Vec<u8>) -> Option<MessageKind>`, `MessageKind` | 0.4 |
+| `Connection::send(&Message)`, `Message` (`Text`, `Binary`, `Ping`, `Pong`, `Close`), `Event::to_message` | 0.4 |
+| `PreparedMessage` (`text`, `binary`, `text_with`, `binary_with`, `as_bytes`, `len`, `is_empty`, `payload_len`), `Connection::send_prepared` | 0.4 |
+| `Stats { bytes_in, bytes_out, frames_in, messages_in, messages_out, pings_in, pongs_in, closes_in }` | 0.4 |
+| `Keepalive` (`new`, `with_ping_interval`, `with_idle_timeout`, `with_close_timeout`, `with_message_timeout`), `Millis`, `Tick` | 0.4 |
+| `Limits`: `new`, `with_max_frame`, `with_max_message`, `max_frame`, `max_message` | 0.2 |
+| `Limits::with_send_frame`, `send_frame` | 0.3 |
+| `Limits::with_max_output` (32 MiB default), `with_input_buffer` (256 B to 1 MiB, default 64 KiB), `with_retain` (64 KiB), their accessors, `DEFAULT_*` constants | 0.4 |
+| `WsError` 0.2 variants and `close_code`; `RandomUnavailable` | 0.2, 0.3 |
+| `WsError::OutputFull`, `IdleTimeout` (1001), `CloseTimeout` (1006), `MessageTimeout` (1008) | 0.4 |
+| `WsError::InvalidCompressedData` (1007, feature `deflate`) | 0.5 |
+| `CloseCode`, `CloseFrame` | 0.2 |
+| `CloseCode::is_private_use`, `is_registered`, `is_reporting_only` | 0.4 |
+| `ServerHandshake`: `from_request`, `from_head`, `accept_key`, `target`, `host`, `origin`, `protocols`, `write_response`, `MAX_HEAD` | 0.2 |
+| `ServerHandshake::select_protocol`, `accept`, `MAX_PROTOCOLS` | 0.3 |
+| `ServerHandshake::extensions`, `write_response_with` (negotiated extensions, extra headers), `response_fields` (the 101 field list for an HTTP layer), `MAX_EXTENSION_OFFERS` | 0.4 |
+| `accept`, `Acceptor`, `Accepted`, `AcceptPolicy` (`new`, `with_origins`, `with_protocols`, `require_protocol`, `with_limits`, `check`), `Decision`, `OriginPolicy`, `HeadReader`, `Verified` | 0.3 |
+| `AcceptPolicy::with_hosts`, `with_keepalive`, `with_secure`; `HandshakeError::HostRefused`; `write_refusal(status, retry_after, out)` (403, 429, 503) | 0.4 |
+| `AcceptPolicy::with_deflate` | 0.5 |
+| `ClientHandshake`: `new`, `with_nonce`, `with_protocols`, `with_origin`, `key`, `write_request`, `verify`, `verify_head` | 0.2 |
+| `ClientHandshake::try_new` | 0.3 |
+| `ClientHandshake::with_header`, `verify_full` | 0.4 |
+| `ClientHandshake::with_deflate`, `connection`, `connection_with_seed`; `Connection::with_extensions`, `negotiated` | 0.5 |
+| `HandshakeError` 0.2 variants, `status`, `write_response`; `UnexpectedBody`, `OriginRefused`, `ProtocolRequired`, `RandomUnavailable` | 0.2, 0.3 |
+| `HandshakeError::InvalidExtensions` | 0.4 |
+| `accept_key`, `AcceptKey` | 0.2 |
+| `frame`: `Opcode`, `FrameHeader` (`new`, `with_mask`, `decode`, `encoded_len`, `encode`), `apply_mask` | 0.2 |
+| `Opcode::is_data`, `MAX_HEADER_LEN`, `MAX_CONTROL_PAYLOAD`, `MAX_PAYLOAD_LEN` | 0.3 |
+| `FrameHeader::encode_to_slice` | 0.4 |
+| `FrameHeader::with_rsv` | 0.5 |
+| `extension` module: `parse`, `Offers`, `Offer` (`name`, `params`), `Param`, `Negotiated` (`none`, `is_empty`, `deflate`), `MAX_OFFERS`, `MAX_PARAMS` | 0.4 |
+| `blocking` module (feature `std`): `accept`, `accept_with`, `connect`, `connect_with`, `WebSocket` (`from_upgraded`, `read`, `send_text`, `send_binary`, `send`, `ping`, `close`, `flush`, `connection`, `connection_mut`, `get_ref`, `get_mut`, `into_inner`), `Error` | 0.4 |
+| permessage-deflate (feature `deflate`): `DeflateConfig`, `DeflateParams`, `SendOptions`, `send_text_with`, `send_binary_with`, `PreparedMessage::with_deflate` | 0.5 (needs the first-party compression crate) |
+| `VERSION` | 0.3 |
+| After 1.0: shared-segment output, a public extension trait, RFC 8441 (`ExtendedConnect`), connection state export | 1.x |

@@ -24,6 +24,7 @@ pub(crate) const MAX_HEAD: usize = 16 * 1024;
 
 /// A complete head: the first line and the field lines, both without their
 /// line endings, and the length of the head in bytes.
+#[derive(Debug)]
 pub(crate) struct Head<'a> {
     pub(crate) first: &'a [u8],
     fields: &'a [u8],
@@ -181,7 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_split_finds_the_end_and_the_fields() {
+    fn test_split_complete_head_returns_fields() {
         let wire = b"GET / HTTP/1.1\r\nA: 1\r\nB:\t two \r\n\r\nrest";
         let head = split(wire).unwrap().unwrap();
         assert_eq!(head.first, b"GET / HTTP/1.1");
@@ -191,14 +192,64 @@ mod tests {
     }
 
     #[test]
-    fn test_head_with_no_fields() {
+    fn test_split_no_fields_accepted() {
         let head = split(b"HTTP/1.1 101 OK\r\n\r\n").unwrap().unwrap();
         assert_eq!(head.first, b"HTTP/1.1 101 OK");
         assert_eq!(head.fields().count(), 0);
     }
 
     #[test]
-    fn test_status_lines() {
+    fn test_split_resume_bytewise_scans_each_byte_once() {
+        let mut wire = b"GET / HTTP/1.1\r\n".to_vec();
+        while wire.len() < MAX_HEAD - 40 {
+            wire.extend_from_slice(b"X-Pad: aaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n");
+        }
+        wire.extend_from_slice(b"\r\n");
+        let mut state = Scan::default();
+        let mut len = None;
+        for end in 1..=wire.len() {
+            if let Some(head) = split_resume(&mut state, &wire[..end]).unwrap() {
+                len = Some(head.len);
+                break;
+            }
+        }
+        assert_eq!(len, Some(wire.len()));
+        // Linear: every byte examined once, not once per call (the one-shot
+        // form would examine about n * n / 2 = 134 million bytes here).
+        assert_eq!(state.examined, wire.len());
+    }
+
+    #[test]
+    fn test_split_resume_matches_split_for_every_cut() {
+        let wire = b"GET /a HTTP/1.1\r\nHost: x\r\nA:\tb\r\n\r\nframes";
+        let whole = split(wire).unwrap().unwrap();
+        for cut in 0..=wire.len() {
+            let mut state = Scan::default();
+            let early = split_resume(&mut state, &wire[..cut]).unwrap();
+            let head = early
+                .or_else(|| split_resume(&mut state, wire).unwrap())
+                .unwrap();
+            assert_eq!(
+                (head.first, head.len),
+                (whole.first, whole.len),
+                "cut {cut}"
+            );
+        }
+        // A bare CR split from what follows it is still refused.
+        let mut state = Scan::default();
+        assert!(
+            split_resume(&mut state, b"GET / HTTP/1.1\r")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            split_resume(&mut state, b"GET / HTTP/1.1\rx").unwrap_err(),
+            HandshakeError::MalformedHead
+        );
+    }
+
+    #[test]
+    fn test_status_line_forms_parsed_or_refused() {
         assert_eq!(status_line(b"HTTP/1.1 101 Switching Protocols"), Some(101));
         assert_eq!(status_line(b"HTTP/1.1 404"), Some(404));
         assert_eq!(status_line(b"HTTP/1.1 999 "), Some(999));

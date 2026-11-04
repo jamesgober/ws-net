@@ -628,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn test_same_origin_ports_and_literals() {
+    fn test_same_origin_ports_and_literals_compared() {
         let p = OriginPolicy::same_origin();
         assert!(p.permits(Some("http://example.com"), "example.com"));
         assert!(p.permits(Some("https://example.com"), "example.com"));
@@ -649,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn test_allow_missing_follows_the_policy() {
+    fn test_origin_policy_missing_origin_follows_flag() {
         assert!(OriginPolicy::same_origin().permits(None, "a"));
         assert!(
             !OriginPolicy::same_origin()
@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn test_allow_refuses_entries_with_whitespace() {
+    fn test_origin_allow_entry_with_whitespace_refused() {
         assert_eq!(
             OriginPolicy::allow(&[" https://a.example"]),
             Err(HandshakeError::InvalidRequest)

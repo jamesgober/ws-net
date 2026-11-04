@@ -41,7 +41,8 @@
 A handful of types, one per job:
 
 - A **[`Connection`](./docs/API.md#connection)** is one WebSocket after the handshake, server or client. [`feed`](./docs/API.md#input) it bytes, [`poll`](./docs/API.md#connectionpoll) it for **[`Event`](./docs/API.md#event)**s (text, binary, ping, pong, close), [`send`](./docs/API.md#sending-messages) messages, and write its [`output`](./docs/API.md#output). Pings are answered and Close frames echoed automatically. **[`Limits`](./docs/API.md#limits)** sets its frame and message budgets.
-- A **[`ServerHandshake`](./docs/API.md#serverhandshake)** is a validated upgrade request, from raw bytes or from an HTTP layer's parsed fields; it writes the `101` response. A **[`ClientHandshake`](./docs/API.md#clienthandshake)** writes the request and checks the response.
+- **[`accept`](./docs/API.md#tier-1-accept-and-acceptor)** takes a socket's first bytes and returns the `101` response and a fed `Connection`, with the same-origin policy applied. An **[`Acceptor`](./docs/API.md#tier-1-accept-and-acceptor)** does the same over a head read in pieces, scanning each byte once, and takes an **[`AcceptPolicy`](./docs/API.md#acceptpolicy-and-decision)** (which pages may connect through an **[`OriginPolicy`](./docs/API.md#originpolicy)**, which subprotocol, which limits).
+- A **[`ServerHandshake`](./docs/API.md#serverhandshake)** is a validated upgrade request, from raw bytes or from an HTTP layer's parsed fields; it writes the `101` response. A **[`ClientHandshake`](./docs/API.md#clienthandshake)** writes the request and checks the response. A **[`HeadReader`](./docs/API.md#headreader)** reads either head from a socket in pieces with linear total work.
 - A **[`WsError`](./docs/API.md#wserror)** is a connection failure, with the close code that was sent, or a refused call that changed nothing. A **[`HandshakeError`](./docs/API.md#handshakeerror)** says why a handshake was refused and writes the refusal.
 - The **[`frame`](./docs/API.md#the-frame-module)** module is the raw header codec and the masking function, for callers that build or inspect frames.
 
@@ -51,12 +52,14 @@ What it guarantees, and how each guarantee is checked:
 
 | Guarantee | How it is held |
 |---|---|
-| Frames follow RFC 6455 exactly; every violation fails the connection with the right close code. | 111 Autobahn-style cases written as data (framing, ping/pong, reserved bits and opcodes, fragmentation, UTF-8, close codes, limits, masking direction, length encoding), each run whole, one byte at a time, and in 7-byte pieces, with identical results. |
+| Frames follow RFC 6455 exactly; every violation fails the connection with the right close code. | 111 Autobahn-style cases written as data (framing, ping/pong, reserved bits and opcodes, fragmentation, UTF-8, close codes, limits, masking direction, length encoding), each run whole, in pieces of every size from 1 to 15 bytes, and split in two at every point, with identical results. |
 | Text is validated as UTF-8 incrementally, across fragment boundaries, and fails at the first bad byte (1007). | A property test accepts a text message exactly when `std::str::from_utf8` accepts its bytes, however it is fragmented and split. |
 | Messages survive any fragmentation and any split of the wire bytes, with control frames interleaved. | Round-trip properties client to server and server to client, against the messages sent. |
 | Hostile input cannot grow memory past the budgets, and never panics. | Budgets are checked from headers (a property compares the verdict with a direct computation); fuzz properties feed arbitrary bytes and frame-shaped noise with the budgets small, default, and lifted to `u64::MAX`; a peer that pings without reading leaves at most one Pong queued. |
 | Every frame shape round-trips through the codec, and masking is its own inverse. | Properties over every opcode, length class, and mask, and over any masking offset, against a byte-by-byte reference. |
-| The handshake is RFC 6455's, and refuses what it should. | RFC 6455's own example request and accept key, strict-head tests (bare CR/LF, folding, duplicate `Host`/`Origin`, wrong version, malformed keys), and a client-server round trip for arbitrary nonces. |
+| The handshake is RFC 6455's, and refuses what it should. | RFC 6455's own example request and accept key, strict-head tests (bare CR/LF, folding, duplicate `Host`/`Origin`, wrong version, malformed keys, a declared body), and a client-server round trip for arbitrary nonces. |
+| A page on another site cannot open a socket as the user. | The Tier 1 path applies the same-origin rule; attack tests try lookalike hosts, userinfo tricks, `null`, other ports and schemes; a property checks `OriginPolicy` against a reference comparison. |
+| A head sent one byte at a time costs linear work. | A unit test counts the bytes the `HeadReader` examines for a 16 KiB head fed one byte per call: each once. A property checks it agrees with the one-shot reader for every cut. |
 | SHA-1 and base64 are correct. | RFC 3174 and RFC 4648 test vectors, padding boundaries, and streaming-versus-one-shot and canonical-decoding properties. |
 
 <hr>
@@ -66,14 +69,14 @@ What it guarantees, and how each guarantee is checked:
 
 ```toml
 [dependencies]
-ws-net = "0.2"
+ws-net = "0.3"
 ```
 
 Without the standard library:
 
 ```toml
 [dependencies]
-ws-net = { version = "0.2", default-features = false }
+ws-net = { version = "0.3", default-features = false }
 ```
 
 <hr>
@@ -81,27 +84,24 @@ ws-net = { version = "0.2", default-features = false }
 
 ## Quick start
 
-Accept a connection from raw bytes and echo a message:
+Accept a connection from a socket's first bytes and echo a message:
 
 ```rust
-use ws_net::{Connection, Event, ServerHandshake};
+use ws_net::Event;
 
 // The upgrade request as it came off the socket, with the first frame
 // right behind it: a masked "Hello" (RFC 6455 sections 1.2 and 5.7).
 let mut wire = b"GET /chat HTTP/1.1\r\nHost: server.example.com\r\n\
-    Upgrade: websocket\r\nConnection: Upgrade\r\n\
+    Upgrade: websocket\r\nConnection: Upgrade\r\nOrigin: https://server.example.com\r\n\
     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n".to_vec();
 wire.extend_from_slice(&[0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58]);
 
-// The handshake: validate, then answer 101.
-let (handshake, head_len) = ServerHandshake::from_head(&wire)?.expect("complete head");
-let mut response = Vec::new();
-handshake.write_response(None, &mut response)?;
-assert!(response.ends_with(b"sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"));
+// One call: validate, check the Origin, answer 101, build the connection.
+let mut accepted = ws_net::accept(&wire)?.expect("complete head");
+assert!(accepted.response.ends_with(b"sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"));
 
-// Messages: feed what followed the head, poll, reply, write the output.
-let mut conn = Connection::server();
-let _ = conn.feed(&wire[head_len..]);
+// Messages: poll, reply, write the output.
+let conn = &mut accepted.connection;
 let text = match conn.poll()? {
     Event::Text(text) => text.to_string(),
     other => panic!("{other:?}"),
@@ -111,21 +111,27 @@ assert_eq!(conn.output(), [0x81, 0x05, b'H', b'e', b'l', b'l', b'o']);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-### Policy: Host and Origin
+### Policy: who may connect
 
-The crate validates the protocol; deciding who may connect is the server's. A browser always sends `Origin`, and checking it is what stops another web page from opening a socket to a local server:
+A browser attaches the user's cookies to a WebSocket request from any page on any site, so a server that does not check `Origin` lets another site's page talk to it as the user (cross-site WebSocket hijacking). `accept` applies the same-origin rule by default; an `AcceptPolicy` sets an allowlist, the subprotocols, and the limits:
 
 ```rust
-use ws_net::ServerHandshake;
+use ws_net::{AcceptPolicy, Acceptor, HandshakeError, OriginPolicy};
 
-let request = b"GET /rpc HTTP/1.1\r\nHost: 127.0.0.1:53817\r\nOrigin: http://evil.example\r\n\
+let request = b"GET /rpc HTTP/1.1\r\nHost: api.example.com\r\nOrigin: https://evil.example\r\n\
     Upgrade: websocket\r\nConnection: Upgrade\r\n\
     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
-let (handshake, _) = ServerHandshake::from_head(request)?.expect("complete head");
-let allowed = handshake.host() == "127.0.0.1:53817"
-    && handshake.origin() == Some("http://127.0.0.1:53817");
-assert!(!allowed); // answer "HTTP/1.1 403 Forbidden" and close
-# Ok::<(), ws_net::HandshakeError>(())
+let refused = ws_net::accept(request).unwrap_err();
+assert_eq!((refused, refused.status()), (HandshakeError::OriginRefused, 403));
+let mut answer = Vec::new();
+refused.write_response(&mut answer); // "HTTP/1.1 403 Forbidden", then close
+
+let policy = AcceptPolicy::new()
+    .with_origins(OriginPolicy::allow(&["https://app.example.com"])?)
+    .with_protocols(&["rpc.v2", "rpc.v1"])?;
+let mut acceptor = Acceptor::with_policy(policy); // feed it the same buffer as it grows
+assert_eq!(acceptor.accept(&request[..40])?.map(|a| a.consumed), None);
+# Ok::<(), HandshakeError>(())
 ```
 
 ### Failures close with the right code
@@ -180,7 +186,8 @@ Runnable programs in [`examples/`](./examples):
 | Example | What it shows |
 |---|---|
 | [`sans_io`](./examples/sans_io.rs) | A client and a server talking through memory: the handshake as raw bytes, messages, a ping, a refused call, and the closing handshake. The loop every transport adapter wraps. `cargo run --example sans_io` |
-| [`echo_server`](./examples/echo_server.rs) | A localhost echo server over `std::net`, one thread per connection, with no HTTP library: the handshake from raw bytes, refusals answered, protocol failures closed with their code. `cargo run --example echo_server -- 127.0.0.1:9001` |
+| [`echo_server`](./examples/echo_server.rs) | A localhost echo server over `std::net`, one thread per connection, with no HTTP library: the handshake through an `Acceptor` (same-origin policy, linear head scanning), refusals answered, protocol failures closed with their code. `cargo run --example echo_server -- 127.0.0.1:9001` |
+| [`accept_policy`](./examples/accept_policy.rs) | An `AcceptPolicy` deciding three requests: the application's own page (101 with the server's preferred subprotocol), another site's page (403), and a client with no shared subprotocol (400). `cargo run --example accept_policy` |
 
 <hr>
 <br>
@@ -200,7 +207,7 @@ Measured with the benchmarks in [`benches/`](./benches), Windows x86_64, Rust st
 | `send_100k/server_unmasked` | A server serializing 100,000 small messages. | ~1.5 ms (~67 M msg/s) |
 | `mask_1mib/in_place` | Masking 1 MiB in place. | ~70-100 GiB/s |
 | `accept_key` | The handshake's SHA-1 and base64. | ~0.3 µs |
-| `handshake/from_head_100k` | Validating a browser-sized upgrade request from raw bytes and writing the `101`, 100,000 times. | ~1.4 µs each |
+| `handshake/from_head_100k` | Validating a browser-sized upgrade request from raw bytes and writing the `101`, 100,000 times. | ~1.4 µs each (0.2.0); 12.7% faster in 0.3.0 with `parse-net`'s list and token scanning |
 
 Linux numbers have not been measured for this release. Numbers vary by CPU and by run (the masking benchmark is memory-bound and the noisiest); use the trend across runs, not a single absolute.
 
@@ -217,7 +224,8 @@ cargo bench --bench bench
 - **Strict where the RFC is strict.** Payload lengths not in their shortest encoding are refused (RFC 6455 says the minimal encoding MUST be used, and accepting both forms gives one frame two encodings). A control frame using an extended length field is refused, whatever the field holds. The handshake head reader refuses bare CR or LF, line folding, and whitespace before a colon, and a request with two `Host` or two `Origin` fields, instead of picking one.
 - **Failures and refusals are different things.** A protocol violation fails the connection and queues the Close frame with its code; a call the protocol does not allow (an oversized Ping, a reserved close code, sending after Close) is refused and changes nothing. `WsError::close_code` tells them apart.
 - **Budgets come from headers, memory from bytes.** A frame or message over budget is refused from its header. A length in a header is a claim, so reassembly reserves at most 1 MiB ahead of the bytes that have actually arrived, even with the budgets lifted.
-- **No dependencies.** SHA-1 (only for the handshake, as RFC 6455 fixes it; it is not used as a security primitive) and strict canonical base64 are small private modules. They move to the owner's crypto and codec libraries when those provide them, without an API change.
+- **No third-party dependencies.** The shared HTTP grammar (tokens, lists, field values, `Origin`, `Host`) comes from the first-party `parse-net`, and the OS cryptographic random source for masking seeds and nonces from the first-party `mod-rand` (feature `std`); neither has dependencies of its own. SHA-1 (only for the handshake, as RFC 6455 fixes it; it is not used as a security primitive) and strict canonical base64 are small private modules.
+- **Fail closed on randomness.** If the OS random source fails, `Connection::client` returns a connection that refuses every send and `ClientHandshake::new` one that refuses to write its request; neither falls back to a predictable value or panics. `try_client` and `try_new` report the failure up front.
 
 <hr>
 <br>
@@ -233,7 +241,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo bench --bench bench
 ```
 
-[`tests/autobahn.rs`](./tests/autobahn.rs) holds the protocol cases as data; [`tests/prop.rs`](./tests/prop.rs) the property tests for every invariant in [`dev/DIRECTIVES.md`](./dev/DIRECTIVES.md); [`tests/handshake.rs`](./tests/handshake.rs) and [`tests/closing.rs`](./tests/closing.rs) the two handshakes; [`tests/echo.rs`](./tests/echo.rs) a real localhost echo, including a protocol failure and an `Origin` refusal; [`tests/regressions.rs`](./tests/regressions.rs) one test per defect the pre-release review found. Every `rust` example in this README and in [`docs/API.md`](./docs/API.md) is compiled and run as a doctest.
+[`tests/autobahn.rs`](./tests/autobahn.rs) holds the protocol cases as data; [`tests/attacks.rs`](./tests/attacks.rs) one test per threat (cross-site hijacking, smuggled bodies, slow heads, floods, log injection, cross-protocol bytes); [`tests/prop.rs`](./tests/prop.rs) the property tests for every invariant in [`dev/DIRECTIVES.md`](./dev/DIRECTIVES.md); [`tests/handshake.rs`](./tests/handshake.rs) and [`tests/closing.rs`](./tests/closing.rs) the two handshakes; [`tests/echo.rs`](./tests/echo.rs) a real localhost echo, including a protocol failure and an `Origin` refusal; [`tests/regressions.rs`](./tests/regressions.rs) one test per defect the pre-release review found. Every `rust` example in this README and in [`docs/API.md`](./docs/API.md) is compiled and run as a doctest.
 
 <hr>
 <br>
@@ -259,8 +267,8 @@ See [`REPS.md`](./REPS.md) for the engineering standards every change is held to
     <h2>License</h2>
     <p>Licensed under either of</p>
     <ul>
-        <li><b>Apache License, Version 2.0</b> &mdash; <a href="./LICENSE-APACHE">LICENSE-APACHE</a></li>
-        <li><b>MIT License</b> &mdash; <a href="./LICENSE-MIT">LICENSE-MIT</a></li>
+        <li><b>Apache License, Version 2.0</b> - <a href="./LICENSE-APACHE">LICENSE-APACHE</a></li>
+        <li><b>MIT License</b> - <a href="./LICENSE-MIT">LICENSE-MIT</a></li>
     </ul>
     <p>at your option.</p>
 </div>

@@ -408,7 +408,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_rfc6455_section_5_7_examples() {
+    fn test_frame_rfc6455_section_5_7_examples_match() {
         // Unmasked "Hello".
         let (h, n) = FrameHeader::decode(&[0x81, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f])
             .unwrap()
@@ -434,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_rejections() {
+    fn test_frame_decode_invalid_headers_refused() {
         assert_eq!(
             FrameHeader::decode(&[0x83, 0x00]),
             Err(WsError::ReservedOpcode)
@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_rejections() {
+    fn test_frame_encode_invalid_headers_refused() {
         let mut out = Vec::new();
         let mut h = FrameHeader::new(Opcode::Close, false, 0);
         assert_eq!(h.encode(&mut out), Err(WsError::FragmentedControl));
@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mask_matches_bytewise_reference() {
+    fn test_apply_mask_any_split_matches_bytewise_reference() {
         let key = [0xde, 0xad, 0xbe, 0xef];
         for len in 0..40 {
             for offset in 0..9 {

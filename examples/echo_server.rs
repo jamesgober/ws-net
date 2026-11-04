@@ -1,6 +1,8 @@
 //! A WebSocket echo server on localhost, one thread per connection, with
 //! no HTTP library: the opening handshake is read from the socket's raw
-//! bytes by `ServerHandshake::from_head`.
+//! bytes by an `Acceptor`, which applies the same-origin policy (a page on
+//! another site gets 403) and scans each byte of the head once however
+//! slowly it arrives.
 //!
 //! ```sh
 //! cargo run --example echo_server -- 127.0.0.1:9001
@@ -16,11 +18,12 @@ use std::{
     time::Duration,
 };
 
-use ws_net::{Connection, Event, ServerHandshake};
+use ws_net::{Acceptor, Connection, Event};
 
 /// Reads the request head and answers it: the 101 on success, the refusal
-/// otherwise. Returns the bytes that arrived after the head.
-fn handshake(stream: &mut TcpStream) -> io::Result<Option<Vec<u8>>> {
+/// otherwise. Returns the connection and the bytes it has not taken yet.
+fn handshake(stream: &mut TcpStream) -> io::Result<Option<(Connection, Vec<u8>)>> {
+    let mut acceptor = Acceptor::new();
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -29,18 +32,14 @@ fn handshake(stream: &mut TcpStream) -> io::Result<Option<Vec<u8>>> {
             return Ok(None);
         }
         buf.extend_from_slice(&chunk[..n]);
-        match ServerHandshake::from_head(&buf) {
+        match acceptor.accept(&buf) {
             Ok(None) => continue,
-            Ok(Some((request, len))) => {
-                // A real server checks `request.host()` and
-                // `request.origin()` against its own policy here, and
-                // answers 403 to a stranger.
-                let mut response = Vec::new();
-                request
-                    .write_response(None, &mut response)
-                    .map_err(io::Error::other)?;
-                stream.write_all(&response)?;
-                return Ok(Some(buf.split_off(len)));
+            Ok(Some(accepted)) => {
+                stream.write_all(&accepted.response)?;
+                return Ok(Some((
+                    accepted.connection,
+                    buf.split_off(accepted.consumed),
+                )));
             }
             Err(refused) => {
                 let mut response = Vec::new();
@@ -62,13 +61,12 @@ fn flush(conn: &mut Connection, stream: &mut TcpStream) -> io::Result<()> {
 }
 
 fn serve(mut stream: TcpStream) -> io::Result<()> {
-    let Some(early) = handshake(&mut stream)? else {
+    let Some((mut conn, early)) = handshake(&mut stream)? else {
         return Ok(());
     };
     // A peer that stops talking does not hold a thread forever.
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
 
-    let mut conn = Connection::server();
     let mut pending = &early[..];
     loop {
         // The event borrows the connection; copy out what the echo needs.

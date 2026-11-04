@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn test_base64_rfc4648_vectors() {
+    fn test_base64_rfc4648_vectors_match() {
         // RFC 4648 section 10.
         for (plain, coded) in [
             ("", ""),
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn test_base64_decode_is_strict() {
+    fn test_base64_decode_noncanonical_refused() {
         for bad in [
             "Zg", "Zg=", "Zg===", "Zh==", "Zm9=", "Z===", "====", "Zm 9v", "Zm9v\n", "Zm-v",
             "Zm_v", "Zg==Zg==", "=Zg=",

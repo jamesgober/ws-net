@@ -65,7 +65,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mask_keys_are_deterministic_per_seed_and_distinct() {
+    fn test_mask_keys_same_seed_deterministic_and_distinct() {
         let mut a = MaskGen::new([1; 32]);
         let mut b = MaskGen::new([1; 32]);
         let mut c = MaskGen::new([2; 32]);
@@ -82,7 +82,7 @@ mod tests {
 
     #[cfg(feature = "std")]
     #[test]
-    fn test_os_seeds_differ() {
+    fn test_os_seed_two_draws_differ() {
         let (a, b) = (os_seed().unwrap(), os_seed().unwrap());
         assert_ne!(a, b);
         assert_ne!(a, [0; 32]);

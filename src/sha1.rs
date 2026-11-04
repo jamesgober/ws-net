@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sha1_rfc3174_vectors() {
+    fn test_sha1_rfc3174_vectors_match() {
         // RFC 3174 section 7.3, TEST1 to TEST4, plus the empty message.
         assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
         assert_eq!(
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sha1_padding_boundaries() {
+    fn test_sha1_padding_boundaries_match() {
         // Lengths around the 55/56/64-byte padding boundaries, against
         // values computed with an independent implementation (Python hashlib).
         let cases: &[(usize, &str)] = &[

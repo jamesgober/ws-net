@@ -23,20 +23,20 @@ Compiles, CI green, structure correct, no domain logic.
 
 Delivered: `Connection` (sans-IO, both roles) with every RFC 6455 receive rule and its close code; budgets checked from frame headers; reassembly reservation capped at 1 MiB; automatic Pong (latest replaces an unwritten one) and Close echo; `ServerHandshake` (`from_head`, `from_request`), `ClientHandshake`, `HandshakeError` refusals (400, 426, 431); the `frame` module; 111 Autobahn-style cases as data, property tests for every invariant, criterion benches at 100k-message scale. Policy recorded then: non-minimal length encodings are refused (1002).
 
-## v0.3.0 - Design lock and core corrections
+## v0.3.0 - Design lock and core corrections (DONE)
 - [x] parse-net 0.9 for the shared RFC 9110 grammar: tokens, OWS, field-value checks, comma lists (quote- and comment-aware, fail closed).
-- [ ] `dev/PLAN.md` with the requirements and the decision log; `docs/API.md` rewritten to the whole 1.0 API, each item with the version it lands in (the design lock).
-- [ ] Tier 1 server accept: `accept(bytes)`, `Acceptor` (resumable, linear scanning), `Accepted { response, connection, consumed, handshake }`.
-- [ ] `HeadReader`: resumable strict head reader for both roles; total scan work linear in the head (closes the slow-head CPU amplification, same class as CVE-2023-43669).
-- [ ] `AcceptPolicy` (`new`, `with_origins`, `with_protocols`, `require_protocol`, `with_limits`, `check`) and `OriginPolicy` (`same_origin`, `allow`, `any_origin`, `allow_missing`, `permits`), using parse-net's `Origin`; same-origin is the Tier 1 default; `ServerHandshake::accept` and `select_protocol`.
-- [ ] `HandshakeError::UnexpectedBody` (refuse `Transfer-Encoding` and a non-zero `Content-Length` on the upgrade), `OriginRefused` (403), `ProtocolRequired`.
-- [ ] `Limits::with_send_frame` (outgoing frame size separate from the incoming budget).
-- [ ] Masking seeds and handshake nonces from the OS CSPRNG through `mod-rand` 1.0 (feature `std`); fallible `try_client` and `ClientHandshake::try_new`; the infallible forms fail closed.
-- [ ] `Connection::is_open`, `can_send`; `Opcode::is_data`; `frame::MAX_HEADER_LEN`, `MAX_CONTROL_PAYLOAD`, `MAX_PAYLOAD_LEN`; `ServerHandshake::MAX_PROTOCOLS`; `pub const VERSION`.
-- [ ] Bounded work per `poll` stated and tested.
-- [ ] Tests: CSWSH, smuggling body, byte-at-a-time head, Pong flood, close-reason log injection, HTTP bytes after the upgrade; every chunk size 1 to 15 over the data cases; test names in the `test_<subject>_<condition>_<expected>` form; `size_of::<Connection>()` at most 512 bytes; an `i686` build check.
-- [ ] CI documents with default and all features; `.editorconfig`; em dashes out of `docs/release/v0.2.0.md`; DIRECTIVES wording ("first-party crates by published version").
-- [ ] Example `accept_policy`.
+- [x] `dev/PLAN.md` with the requirements and the decision log; `docs/API.md` rewritten to the whole 1.0 API, each item with the version it lands in (the design lock).
+- [x] Tier 1 server accept: `accept(bytes)`, `Acceptor` (resumable, linear scanning), `Accepted { response, connection, consumed, handshake }`.
+- [x] `HeadReader`: resumable strict head reader for both roles; total scan work linear in the head (closes the slow-head CPU amplification, same class as CVE-2023-43669).
+- [x] `AcceptPolicy` (`new`, `with_origins`, `with_protocols`, `require_protocol`, `with_limits`, `check`) and `OriginPolicy` (`same_origin`, `allow`, `any_origin`, `allow_missing`, `permits`), using parse-net's `Origin`; same-origin is the Tier 1 default; `ServerHandshake::accept` and `select_protocol`.
+- [x] `HandshakeError::UnexpectedBody` (refuse `Transfer-Encoding` and a non-zero `Content-Length` on the upgrade), `OriginRefused` (403), `ProtocolRequired`.
+- [x] `Limits::with_send_frame` (outgoing frame size separate from the incoming budget).
+- [x] Masking seeds and handshake nonces from the OS CSPRNG through `mod-rand` 1.0 (feature `std`); fallible `try_client` and `ClientHandshake::try_new`; the infallible forms fail closed.
+- [x] `Connection::is_open`, `can_send`; `Opcode::is_data`; `frame::MAX_HEADER_LEN`, `MAX_CONTROL_PAYLOAD`, `MAX_PAYLOAD_LEN`; `ServerHandshake::MAX_PROTOCOLS`; `pub const VERSION`.
+- [x] Bounded work per `poll` stated and tested.
+- [x] Tests: CSWSH, smuggling body, byte-at-a-time head, Pong flood, close-reason log injection, HTTP bytes after the upgrade; every chunk size 1 to 15 over the data cases; test names in the `test_<subject>_<condition>_<expected>` form; `size_of::<Connection>()` at most 512 bytes; an `i686` build check.
+- [x] CI documents with default and all features; `.editorconfig`; em dashes out of `docs/release/v0.2.0.md`; DIRECTIVES wording ("first-party crates by published version").
+- [x] Example `accept_policy`.
 
 Exit: every item implemented, documented with an example, and tested; local gate and CI green on all platforms.
 

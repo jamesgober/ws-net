@@ -8,7 +8,7 @@
 //! the frames it must write back. Every case runs fed whole, one byte at a
 //! time, and in 7-byte pieces; all three runs must agree exactly.
 //!
-//! The full Autobahn suite as a dev-only oracle is part of v0.9.0 (see
+//! The full Autobahn suite runs in CI from v0.7.0 (see
 //! `dev/ROADMAP.md`); these cases are its behaviour written down as data.
 
 mod common;
@@ -641,7 +641,39 @@ fn run(case: &Case, pieces: &[&[u8]]) -> (Vec<Ev>, Vec<(Opcode, Vec<u8>)>) {
 }
 
 #[test]
-fn test_autobahn_style_cases() {
+fn test_autobahn_cases_every_piece_size_agree() {
+    for case in &cases() {
+        let whole = run(case, &[&case.input]);
+        for size in 1..=15 {
+            let pieces: Vec<&[u8]> = case.input.chunks(size).collect();
+            assert_eq!(run(case, &pieces), whole, "{}: {size}-byte pieces", case.id);
+        }
+    }
+}
+
+#[test]
+fn test_autobahn_cases_every_two_piece_split_agree() {
+    for case in &cases() {
+        let whole = run(case, &[&case.input]);
+        let len = case.input.len();
+        // Every split point of the small cases; for the 64 KiB ones, every
+        // point near a header or a buffer boundary and a stride between.
+        let points: Vec<usize> = if len <= 4096 {
+            (0..=len).collect()
+        } else {
+            (0..=len)
+                .filter(|&i| i < 32 || len - i < 32 || i % 997 == 0 || (i % 4096) < 3)
+                .collect()
+        };
+        for at in points {
+            let (a, b) = case.input.split_at(at);
+            assert_eq!(run(case, &[a, b]), whole, "{}: split at {at}", case.id);
+        }
+    }
+}
+
+#[test]
+fn test_autobahn_cases_whole_bytewise_sevens_agree() {
     let all = cases();
     assert!(all.len() >= 111, "{} cases", all.len());
     for case in &all {

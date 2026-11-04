@@ -14,24 +14,21 @@
 //! ## Tier 1: accept and echo
 //!
 //! ```
-//! use ws_net::{Connection, Event, ServerHandshake};
+//! use ws_net::Event;
 //!
 //! // The upgrade request as it came off the socket, with the first frame
 //! // right behind it: a masked "Hello" (RFC 6455 sections 1.2 and 5.7).
 //! let mut wire = b"GET /chat HTTP/1.1\r\nHost: server.example.com\r\n\
-//!     Upgrade: websocket\r\nConnection: Upgrade\r\n\
+//!     Upgrade: websocket\r\nConnection: Upgrade\r\nOrigin: https://server.example.com\r\n\
 //!     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n".to_vec();
 //! wire.extend_from_slice(&[0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58]);
 //!
-//! // 1. The handshake: validate, then answer 101.
-//! let (handshake, head_len) = ServerHandshake::from_head(&wire)?.expect("complete head");
-//! let mut response = Vec::new();
-//! handshake.write_response(None, &mut response)?;
-//! assert!(response.ends_with(b"sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"));
+//! // 1. The handshake: validate, apply the same-origin policy, answer 101.
+//! let mut accepted = ws_net::accept(&wire)?.expect("complete head");
+//! assert!(accepted.response.ends_with(b"sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"));
 //!
-//! // 2. Messages: feed what follows the head, poll, reply.
-//! let mut conn = Connection::server();
-//! let _ = conn.feed(&wire[head_len..]);
+//! // 2. Messages: the bytes after the head were fed already; poll, reply.
+//! let conn = &mut accepted.connection;
 //! let text = match conn.poll()? {
 //!     Event::Text(text) => text.to_string(),
 //!     other => panic!("{other:?}"),
@@ -44,6 +41,11 @@
 //!
 //! ## The handshake
 //!
+//! [`accept`] is the one-call server path; an [`Acceptor`] is its
+//! resumable form for a head read in pieces (each byte scanned once), and
+//! takes an [`AcceptPolicy`]: which pages may connect ([`OriginPolicy`],
+//! the defense against cross-site WebSocket hijacking), which subprotocol
+//! is spoken, and the connection's [`Limits`]. Underneath,
 //! [`ServerHandshake::from_head`] (raw bytes) or
 //! [`ServerHandshake::from_request`] (behind an HTTP layer) validates an
 //! upgrade request and exposes its target, `Host`, and `Origin` for the
@@ -81,7 +83,7 @@
 //!
 //! | Feature | Default | Description |
 //! |---|---|---|
-//! | `std` | yes | Random masking keys and handshake nonces from the OS ([`Connection::client`], `ClientHandshake::new`). Without it the crate is `no_std` + `alloc`, and clients take a seed ([`Connection::client_with_seed`], [`ClientHandshake::with_nonce`]). |
+//! | `std` | yes | Masking-key seeds and handshake nonces from the OS cryptographic random source through `mod-rand` ([`Connection::client`], `try_client`, `ClientHandshake::new`, `try_new`). Without it the crate is `no_std` + `alloc`, and clients take a seed ([`Connection::client_with_seed`], [`ClientHandshake::with_nonce`]) that must come from a cryptographic source. |
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -145,7 +147,7 @@ struct DocsDoctests;
 #[cfg(test)]
 mod tests {
     #[test]
-    fn test_public_types_are_send_and_sync() {
+    fn test_public_types_send_and_sync_compile() {
         fn assert<T: Send + Sync>() {}
         assert::<crate::Connection>();
         assert::<crate::ServerHandshake>();
@@ -153,5 +155,18 @@ mod tests {
         assert::<crate::WsError>();
         assert::<crate::HandshakeError>();
         assert::<crate::Limits>();
+        assert::<crate::HeadReader>();
+        assert::<crate::AcceptPolicy>();
+        assert::<crate::OriginPolicy>();
+        assert::<crate::Acceptor>();
+        assert::<crate::Accepted>();
+    }
+
+    #[test]
+    fn test_connection_inline_size_at_most_512_bytes() {
+        // Many idle connections: the inline part is what an idle one costs
+        // once its buffers are released.
+        let size = core::mem::size_of::<crate::Connection>();
+        assert!(size <= 512, "size_of::<Connection>() = {size}");
     }
 }

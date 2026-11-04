@@ -337,7 +337,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_close_codes_for_every_protocol_error() {
+    fn test_ws_error_protocol_errors_map_to_close_codes() {
         assert_eq!(
             WsError::ReservedOpcode.close_code(),
             Some(CloseCode::PROTOCOL_ERROR)
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn test_display() {
+    fn test_errors_display_states_rule() {
         assert_eq!(
             WsError::InvalidState("closed").to_string(),
             "invalid call order: closed"

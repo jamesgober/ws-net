@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "ws-net"
-version = "0.2.0"
+version = "0.3.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -16,7 +16,7 @@ license = "Apache-2.0 OR MIT"
 readme = "README.md"
 
 # Description
-description = "Sans-IO WebSocket (RFC 6455) engine: opening handshake, framing, masking, fragmentation with incremental UTF-8 validation, ping/pong, close handshake, size budgets, no dependencies."
+description = "Sans-IO WebSocket (RFC 6455) engine: opening handshake, framing, masking, fragmentation with incremental UTF-8 validation, ping/pong, close handshake, size budgets, same-origin policy, no third-party dependencies."
 
 # Keywords (5 max)
 keywords = ["websocket", "rfc6455", "protocol", "sans-io", "network"]
@@ -90,6 +90,9 @@ required-features = ["std"]
 [[example]]
 name              = "echo_server"
 required-features = ["std"]
+
+[[example]]
+name              = "accept_policy"
 
 
 # RELEASE PROFILE

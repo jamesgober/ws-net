@@ -203,25 +203,24 @@ Runnable programs in [`examples/`](./examples):
 
 ## Performance
 
-The hot paths do no per-message allocation. A single-frame message that is already in the input buffer is unmasked in place and lent out as a slice of the buffer, with no copy. Masking runs eight bytes at a time. Frames are encoded straight into the output queue. Fragmented messages are reassembled into one reused buffer, which is released after delivery if a large message grew it.
+The hot paths do no per-message allocation (checked by a counting allocator in CI). A single-frame message already in the input buffer is unmasked in place and lent out with no copy; a streamed text message is validated once per byte as it arrives; frames are written straight into the output queue; client masking keys come from the OS in 1 KiB batches; a browser handshake allocates once.
 
-Measured with the benchmarks in [`benches/`](./benches), Windows x86_64, Rust stable, release profile:
+Against tungstenite 0.30.0 on the same bytes, on GitHub's hosted runners (ratio: tungstenite's median over ws-net's; above 1.00, ws-net is faster):
 
-| Benchmark | What it measures | Windows |
-|---|---|---:|
-| `receive_100k/small_messages` | A server parsing 100,000 small masked messages (half JSON-RPC text, half binary) in 64 KiB reads. | ~1.1 ms (~90 M msg/s) |
-| `receive_1mib/binary` | One 1 MiB masked binary message in 64 KiB reads. | ~4.3 GiB/s |
-| `receive_1mib/text_utf8` | One 1 MiB masked text message, UTF-8 validated. | ~1.8 GiB/s |
-| `send_100k/client_masked` | A client serializing and masking 100,000 small messages. | ~4.8 ms (~21 M msg/s) |
-| `send_100k/server_unmasked` | A server serializing 100,000 small messages. | ~1.5 ms (~67 M msg/s) |
-| `mask_1mib/in_place` | Masking 1 MiB in place. | ~70-100 GiB/s |
-| `accept_key` | The handshake's SHA-1 and base64. | ~0.3 µs |
-| `handshake/from_head_100k` | Validating a browser-sized upgrade request from raw bytes and writing the `101`, 100,000 times. | ~1.4 µs each (0.2.0); 12.7% faster in 0.3.0 with `parse-net`'s list and token scanning |
+| Workload | Linux x86_64 | macOS arm64 | Windows x86_64 |
+|---|---:|---:|---:|
+| Receive 100,000 small masked messages | 2.34 | 1.95 | 2.34 |
+| Send 100,000 small messages, server | 2.55 | 2.12 | 4.83 |
+| Send 100,000 small messages, client (masked) | 1.47 | 1.93 | 3.52 |
+| Accept 10,000 browser upgrade requests | 1.07 | 1.11 | 1.38 |
+| Receive one 1 MiB binary message | 0.19 | 1.02 | 1.17 |
+| Receive one 1 MiB text message | 0.64 | 1.08 | 1.08 |
 
-Linux numbers have not been measured for this release. Numbers vary by CPU and by run (the masking benchmark is memory-bound and the noisiest); use the trend across runs, not a single absolute.
+The 1 MiB rows on Linux are an open item: the crate's own benchmark measures the same path on the same runner level with tungstenite, so the gap points at a fresh-allocation cost in the harness, not the parser. [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md) has every number, the comparison with 0.2.0, the method, and how to reproduce it.
 
 ```bash
-cargo bench --bench bench
+cargo bench --bench bench                          # the crate's benchmarks
+cd bench-compare && cargo bench --bench compare    # against tungstenite
 ```
 
 <hr>

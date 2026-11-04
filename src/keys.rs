@@ -180,7 +180,6 @@ mod tests {
     }
 
     #[cfg(feature = "std")]
-    #[cfg(feature = "std")]
     #[test]
     fn test_os_keys_distinct_across_refills() {
         let mut g = MaskGen::from_os().unwrap();

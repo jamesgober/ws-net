@@ -1,0 +1,106 @@
+# ws-net - Performance
+
+Measured numbers, how they were taken, and how to reproduce them. Every number here comes from
+one run of `.github/workflows/bench.yml` on GitHub's hosted runners, so the three platforms ran
+the same commit (`4359c49`, run 41899339504) at the same time. Hosted runners are shared virtual
+machines: compare rows within one run and one platform, never across runs. The development
+machine (shared by many builds, load near 40 on 32 cores) was too noisy to publish from.
+
+<sub>Copyright &copy; 2026 <strong>James Gober</strong>.</sub>
+
+## Method
+
+- Rust stable, `cargo bench` with the release profile (`opt-level = 3`, `lto = "fat"`, `codegen-units = 1`).
+- Criterion medians. Baselines: v0.2.0 built from its tag in the same job, then this commit with
+  `--baseline-lenient v020` (benchmarks newer than 0.2.0 have no baseline).
+- Competitor: tungstenite 0.30.0 (`bench-compare/`, outside ws-net's dependency graph), on the
+  same wire bytes at each library's lowest public layer: ws-net's `Connection`, tungstenite's
+  `WebSocket` over an in-memory stream. UTF-8 validation on, unmasked client frames refused,
+  default budgets except where a workload needs more. Libraries that need an async runtime
+  (fastwebsockets, tokio-websockets, ratchet) are not compared: no async runtime is used anywhere
+  in this repository.
+- Reproduce: `cargo bench --bench bench` in the crate; `cargo bench --bench compare` in `bench-compare/`;
+  `python3 bench-compare/summary.py <criterion dir> [baseline]` prints the tables.
+
+## ws-net against tungstenite 0.30.0
+
+The ratio is tungstenite's median over ws-net's: above 1.00, ws-net is faster.
+
+| Workload | Linux x86_64 | macOS arm64 | Windows x86_64 |
+|---|---:|---:|---:|
+| Receive 100,000 small masked messages (server) | 1.89 ms vs 4.41 ms (2.34) | 1.43 ms vs 2.8 ms (1.95) | 1.95 ms vs 4.55 ms (2.34) |
+| Receive one 1 MiB binary message | 414 µs vs 77.5 µs (0.19) | 67 µs vs 68.2 µs (1.02) | 468 µs vs 548 µs (1.17) |
+| Receive one 1 MiB text message (mixed UTF-8) | 1.02 ms vs 650 µs (0.64) | 672 µs vs 723 µs (1.08) | 1.19 ms vs 1.28 ms (1.08) |
+| Send 100,000 small messages (server, unmasked) | 1.32 ms vs 3.37 ms (2.55) | 1.88 ms vs 3.99 ms (2.12) | 1.16 ms vs 5.61 ms (4.83) |
+| Send 100,000 small messages (client, masked) | 3.5 ms vs 5.15 ms (1.47) | 3.61 ms vs 6.95 ms (1.93) | 2.25 ms vs 7.9 ms (3.52) |
+| Accept 10,000 browser upgrade requests | 25.5 ms vs 27.3 ms (1.07) | 20.5 ms vs 22.8 ms (1.11) | 23.1 ms vs 32 ms (1.38) |
+
+## This release against 0.2.0
+
+| Benchmark | Linux x86_64 | macOS arm64 | Windows x86_64 |
+|---|---:|---:|---:|
+| `broadcast/prepared_10k` | 88.1 µs | 88 µs | 159 µs |
+| `flood/empty_continuations` | 18.6 ms | 10.9 ms | 14.1 ms |
+| `handshake/from_head_100k` | 265 ms (-18.6%) | 230 ms (-33.4%) | 247 ms (-0.6%) |
+| `handshake/head_reader_bytewise` | 3.93 µs | 2.76 µs | 3.4 µs |
+| `keepalive/on_time_idle` | 905 µs | 383 µs | 873 µs |
+| `mask_1mib/in_place` | 21.4 µs (+0.3%) | 23.3 µs (-1.8%) | 20.6 µs (-2.6%) |
+| `receive_100k/small_messages` | 2.32 ms (+2.4%) | 2.32 ms (+35.2%) | 2.34 ms (+4.5%) |
+| `receive_1mib/binary` | 75.7 µs (-0.5%) | 77.9 µs (-7.2%) | 545 µs (+4.6%) |
+| `receive_1mib/text_utf8` | 543 µs (-59.9%) | 635 µs (-41.3%) | 686 µs (-41.9%) |
+| `send_100k/client_masked` | 7.35 ms (+9.2%) | 9.06 ms (-1.6%) | 8.73 ms (+7.0%) |
+| `send_100k/client_masked_os` | 3.52 ms | 3.32 ms | 4.44 ms |
+| `send_100k/server_unmasked` | 1.24 ms (+24.2%) | 1.74 ms (-22.4%) | 3.32 ms (+12.5%) |
+
+## Reading the tables
+
+**Where ws-net leads tungstenite** (on all three platforms): receiving many
+small messages (1.9 to 2.3 times), sending as a server (2.1 to 4.8 times)
+and as a client (1.5 to 3.5 times), and accepting upgrade requests (1.07 to
+1.38 times). Small-message receive is zero-copy (a single-frame message is
+unmasked in place and lent from the input buffer); sends write headers
+straight into the output; client masking keys come from the OS in 1 KiB
+batches (about 1.4 ns per key on Windows x86_64, against about 40 ns for
+SHA-1 counter mode); the handshake record is one allocation.
+
+**Where they are level:** one 1 MiB message, binary or text, on macOS and
+Windows (0.98 to 1.17). Both copy the payload once and validate text once;
+the remaining cost is memory bandwidth.
+
+**Shortfalls, with their cause and plan:**
+
+- *1 MiB receive on Linux in the comparison harness* (ws-net 414 µs against
+  77 µs binary, 1.02 ms against 650 µs text). The crate's own benchmark
+  measures the same path on the same runner at 76 µs (binary) and 543 µs
+  (text), level with tungstenite, and macOS and Windows show no gap. The
+  harness builds a fresh connection per iteration, so the 1 MiB reassembly
+  buffer is a fresh allocation each time; on glibc that is a fresh
+  `mmap` whose pages fault on first touch. Plan (0.9.x pass): confirm with
+  allocation counts and `perf`, and if it is the page faults, reuse the
+  reassembly allocation across connections or grow it in place instead of
+  reserving the frame size up front.
+- *Small sends against 0.2.0:* about 12 to 24% slower on Linux and Windows
+  (about 2.4 ns per send on Linux; macOS measured 22% faster). This is the
+  price of the 0.4 output budget (one size check per send, the slow-consumer
+  defense) and the counters; the header writer was rewritten in 0.6 to keep
+  everything else at 0.2.0's cost. Recorded as an accepted cost
+  (`dev/PLAN.md` D-033) and re-checked in the 0.9.x pass.
+- *Small-message receive on macOS against 0.2.0* moved between +7.6% and
+  +35% across runs while Linux and Windows stayed within 5%; treated as
+  runner noise until a quieter measurement says otherwise.
+
+**Improvements over 0.2.0:** 1 MiB text receive 42 to 60% faster (one
+UTF-8 pass instead of two), the raw-head handshake 1 to 33% faster
+(parse-net's list and token scanning, one allocation), and client sends
+through `Connection::client` about 2 to 2.6 times faster (OS key batches;
+`client_masked` uses a fixed seed and SHA-1 counter mode for
+reproducibility, `client_masked_os` the OS batches).
+
+## Memory
+
+From `tests/memory.rs` (a counting allocator, every platform in CI):
+receiving and sending small messages, fragmented messages, Ping floods,
+idle keepalive ticks, prepared sends, and the Close echo allocate nothing
+once the buffers have grown; a browser handshake allocates once; an idle
+connection after `release_memory` holds no heap, and its inline size is at
+most 512 bytes.

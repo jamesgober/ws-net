@@ -45,6 +45,7 @@ The numbers are in `docs/PERFORMANCE.md`.
 - The server handshake record is one allocation (target, `Host`, `Origin`,
   protocols, and extensions in one buffer).
 - The frame writer writes headers directly on the send path.
+- `PreparedMessage`'s `Debug` prints lengths only, never the payload.
 - permessage-deflate moved out of 1.0 to 1.1: no first-party DEFLATE crate
   exists.
 

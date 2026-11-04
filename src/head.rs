@@ -11,6 +11,12 @@
 //! whole head must fit in [`MAX_HEAD`] bytes. There are no bodies: a
 //! handshake request has none, and a refused response's body is not read.
 
+use parse_net::{
+    class::{self, Class},
+    scan,
+    text::{is_token, trim_ows},
+};
+
 use crate::error::HandshakeError;
 
 /// The largest head accepted, request line and fields together.
@@ -95,9 +101,8 @@ fn field(line: &[u8]) -> Option<(&str, &[u8])> {
         return None;
     }
     let value = trim_ows(rest.get(1..).unwrap_or(&[]));
-    if value.iter().any(|&b| is_control(b)) {
-        return None;
-    }
+    // Field text: no C0 control other than tab, no DEL.
+    scan::check_field_value(value).ok()?;
     Some((core::str::from_utf8(name).ok()?, value))
 }
 
@@ -123,36 +128,16 @@ pub(crate) fn status_line(line: &[u8]) -> Option<u16> {
         return None;
     }
     if !(reason.is_empty() || reason.first() == Some(&b' '))
-        || reason.iter().any(|&b| is_control(b))
+        || scan::check_field_value(reason).is_err()
     {
         return None;
     }
     Some(code.iter().fold(0u16, |n, d| n * 10 + u16::from(d - b'0')))
 }
 
-/// An RFC 9110 token: one or more `tchar`.
-pub(crate) fn is_token(s: &[u8]) -> bool {
-    !s.is_empty()
-        && s.iter()
-            .all(|&b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
-}
-
 /// One or more visible ASCII characters (no space, no control).
 pub(crate) fn is_visible(s: &[u8]) -> bool {
-    !s.is_empty() && s.iter().all(u8::is_ascii_graphic)
-}
-
-/// A control byte not allowed in a field value (tab is allowed).
-const fn is_control(b: u8) -> bool {
-    (b < 0x20 && b != b'\t') || b == 0x7f
-}
-
-/// `s` without leading and trailing spaces and tabs.
-pub(crate) fn trim_ows(s: &[u8]) -> &[u8] {
-    let is_ows = |b: &u8| *b == b' ' || *b == b'\t';
-    let start = s.iter().position(|b| !is_ows(b)).unwrap_or(s.len());
-    let end = s.iter().rposition(|b| !is_ows(b)).map_or(start, |i| i + 1);
-    s.get(start..end).unwrap_or(&[])
+    !s.is_empty() && class::all(s, Class::VCHAR)
 }
 
 #[cfg(test)]
@@ -193,12 +178,5 @@ mod tests {
         ] {
             assert_eq!(status_line(bad), None, "{bad:?}");
         }
-    }
-
-    #[test]
-    fn test_trim_ows() {
-        assert_eq!(trim_ows(b""), b"");
-        assert_eq!(trim_ows(b" \t "), b"");
-        assert_eq!(trim_ows(b" a b\t"), b"a b");
     }
 }

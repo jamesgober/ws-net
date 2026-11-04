@@ -18,10 +18,12 @@ use alloc::{
 };
 use core::fmt;
 
+use parse_net::{list::contains_token, text::is_token};
+
 use crate::{
     base64,
     error::HandshakeError,
-    head::{self, is_token, is_visible},
+    head::{self, is_visible},
     sha1::Sha1,
 };
 
@@ -105,16 +107,10 @@ pub fn accept_key(key: &[u8]) -> AcceptKey {
     AcceptKey(out)
 }
 
-/// The non-empty elements of a comma-separated field value.
-fn list(value: &[u8]) -> impl Iterator<Item = &[u8]> {
-    value
-        .split(|&b| b == b',')
-        .map(head::trim_ows)
-        .filter(|e| !e.is_empty())
-}
-
+/// Whether the comma list `value` holds `token` (ASCII case-insensitive).
+/// A value that is not a valid RFC 9110 list holds nothing (fail closed).
 fn list_has(value: &[u8], token: &[u8]) -> bool {
-    list(value).any(|e| e.eq_ignore_ascii_case(token))
+    contains_token([value], token)
 }
 
 /// Text from bytes already checked to be visible ASCII.
@@ -257,7 +253,9 @@ impl ServerHandshake {
                 origins += 1;
                 origin = value;
             } else if name.eq_ignore_ascii_case("sec-websocket-protocol") {
-                for p in list(value) {
+                let offered =
+                    parse_net::list(value).map_err(|_| HandshakeError::InvalidProtocol)?;
+                for p in offered.iter() {
                     if !is_token(p) || protocols.len() == MAX_PROTOCOLS {
                         return Err(HandshakeError::InvalidProtocol);
                     }
@@ -668,7 +666,9 @@ impl ClientHandshake {
                 accepts += 1;
                 accept_ok = value == self.expected.as_bytes();
             } else if name.eq_ignore_ascii_case("sec-websocket-extensions") {
-                if list(value).next().is_some() {
+                // None was offered, so any element (or a value that is not a
+                // list at all) is one the client did not ask for.
+                if parse_net::list(value).map_or(true, |l| !l.is_empty()) {
                     return Err(HandshakeError::UnexpectedExtension);
                 }
             } else if name.eq_ignore_ascii_case("sec-websocket-protocol") {
@@ -860,6 +860,54 @@ mod tests {
     }
 
     #[test]
+    fn test_server_lists_follow_rfc_9110() {
+        let with = |name: &'static str, value: &'static [u8]| {
+            let mut h: Vec<(&str, &[u8])> = rfc_headers().to_vec();
+            h.push((name, value));
+            ServerHandshake::from_request("GET", "/", h)
+        };
+        // A comma inside a quoted string does not split, and a quoted
+        // string is not a token.
+        assert_eq!(
+            with("Sec-WebSocket-Protocol", b"\"a,b\""),
+            Err(HandshakeError::InvalidProtocol)
+        );
+        // An unterminated quote or a control byte is not a list at all.
+        assert_eq!(
+            with("Sec-WebSocket-Protocol", b"chat, \"x"),
+            Err(HandshakeError::InvalidProtocol)
+        );
+        assert_eq!(
+            with("Sec-WebSocket-Protocol", b"chat "),
+            Err(HandshakeError::InvalidProtocol)
+        );
+        // `upgrade` inside quotes or a comment is not the token.
+        let mut h = without(2);
+        h.push(("Connection", b"\"upgrade\""));
+        assert_eq!(
+            ServerHandshake::from_request("GET", "/", h),
+            Err(HandshakeError::MissingConnectionUpgrade)
+        );
+        let mut h = without(1);
+        h.push(("Upgrade", b"(websocket) h2c"));
+        assert_eq!(
+            ServerHandshake::from_request("GET", "/", h),
+            Err(HandshakeError::MissingUpgrade)
+        );
+        // A list that does not parse holds nothing (fail closed).
+        let mut h = without(1);
+        h.push(("Upgrade", b"websocket, \"x"));
+        assert_eq!(
+            ServerHandshake::from_request("GET", "/", h),
+            Err(HandshakeError::MissingUpgrade)
+        );
+        // Comments and empty elements around the tokens are fine.
+        let mut h = without(2);
+        h.push(("Connection", b"keep-alive (legacy), , Upgrade"));
+        assert!(ServerHandshake::from_request("GET", "/", h).is_ok());
+    }
+
+    #[test]
     fn test_client_verify_rules() {
         let client = ClientHandshake::with_nonce(*b"the sample nonce").with_protocols(&["chat"]);
         let good: [(&str, &[u8]); 4] = [
@@ -878,6 +926,13 @@ mod tests {
         let mut empty_ext = good.to_vec();
         empty_ext.push(("Sec-WebSocket-Extensions", b" , "));
         assert_eq!(client.verify(101, empty_ext), Ok(Some("chat")));
+        // A value that is not a list is refused, not read as empty.
+        let mut broken_ext = good.to_vec();
+        broken_ext.push(("Sec-WebSocket-Extensions", b"\"x"));
+        assert_eq!(
+            client.verify(101, broken_ext),
+            Err(HandshakeError::UnexpectedExtension)
+        );
         let mut other = good.to_vec();
         other[3] = ("Sec-WebSocket-Protocol", b"superchat");
         assert_eq!(

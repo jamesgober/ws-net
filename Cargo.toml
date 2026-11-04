@@ -54,8 +54,13 @@ std = []
 # DEPENDENCIES
 # #################################
 [dependencies]
-# None. SHA-1 and base64 for the handshake are small private modules until
-# the owner's crypto and codec libraries are published (dev/ROADMAP.md).
+# First party, no third-party dependencies of its own: the shared RFC 9110
+# grammar (tokens, OWS, lists, field-value checks, Origin, Host). Default
+# features off: no_std, no allocator.
+parse-net = { version = "0.9", default-features = false }
+# SHA-1 and base64 for the handshake stay small private modules: crypt-io
+# ships no SHA-1 by design and the owner's codec library has no base64
+# (dev/ROADMAP.md, dependency wiring).
 
 
 # DEV DEPENDENCIES

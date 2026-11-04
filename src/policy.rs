@@ -17,7 +17,8 @@ use alloc::{
 use parse_net::{Origin, OriginValue, parse_host_port, parse_origin, text::is_token};
 
 use crate::{
-    conn::{Connection, Limits},
+    conn::Connection,
+    limits::Limits,
     error::HandshakeError,
     handshake::{HeadReader, ServerHandshake},
 };

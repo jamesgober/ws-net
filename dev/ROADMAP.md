@@ -107,6 +107,11 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 ### v0.9.x - Pre-1.0 polish (before any release candidate)
 - [ ] Revisit every accepted gap, deferred item, and missed target recorded in this file and the decision log; close it or record why it stays open.
 - [ ] Fresh performance pass against tungstenite and the other competitors on the current versions.
+- [ ] Small sends 12 to 24% behind 0.2.0 (D-033): try skipping the budget accounting while the output queue is well under its limit, or accounting once per flush instead of per frame. Close the gap or write the measured reason into `docs/STABILITY-1.0.md`.
+- [ ] The Linux 1 MiB receive rows of the hosted harness (0.19 binary, 0.64 text against tungstenite; not reproduced in WSL, where binary is 0.81 and text is ahead): find the cause or record it.
+- [ ] Extension parameters on parse-net's optional-value parameter parser once parse-net 0.9.1 is published (D-045), replacing ws-net's own parameter loop.
+- [ ] permessage-deflate: in 1.0 only if the new first-party DEFLATE crate is on crates.io by this pass, otherwise 1.1, said in the readiness note (D-046).
+- [ ] The end-to-end benchmark's payloads above 1 KiB and the socket-level soak at full length (24 hours) once net-io 0.6.1 reuses output buffers (D-044).
 - [ ] Fresh security review of the whole crate.
 - [ ] `docs/STABILITY-1.0.md` draft as the 1.0 readiness note: what is done, what is open, the go/no-go list.
 - [ ] Release candidates with no API change for two weeks before 1.0.

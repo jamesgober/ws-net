@@ -521,21 +521,39 @@ impl Writer {
         self.raw_frame(opcode, fin, payload)
     }
 
+    /// Appends one frame. Every caller passes a valid opcode, and a
+    /// control payload already checked to be at most 125 bytes, so the
+    /// header is written directly: this is the send hot path.
     fn raw_frame(&mut self, opcode: Opcode, fin: bool, payload: &[u8]) -> Result<(), WsError> {
-        let mut header = FrameHeader::new(opcode, fin, payload.len() as u64);
         // A client without a key source never sends: an unmasked client
         // frame is a protocol error, and a predictable key defeats masking.
-        if self.role == Role::Client && self.masks.is_none() {
-            return Err(WsError::RandomUnavailable);
-        }
-        let key = match self.masks.as_mut() {
-            Some(m) => Some(m.next_key().ok_or(WsError::RandomUnavailable)?),
-            None => None,
+        let key = match (&mut self.masks, self.role) {
+            (Some(m), _) => Some(m.next_key().ok_or(WsError::RandomUnavailable)?),
+            (None, Role::Client) => return Err(WsError::RandomUnavailable),
+            (None, Role::Server) => None,
         };
-        if let Some(k) = key {
-            header = header.with_mask(k);
+        let len = payload.len();
+        let mut header = [0u8; crate::frame::MAX_HEADER_LEN];
+        header[0] = (u8::from(fin) << 7) | opcode.as_u8();
+        let mask_bit = if key.is_some() { 0x80 } else { 0 };
+        let mut n = 2;
+        if len < 126 {
+            header[1] = mask_bit | len as u8;
+        } else if let Ok(short) = u16::try_from(len) {
+            header[1] = mask_bit | 126;
+            header[2..4].copy_from_slice(&short.to_be_bytes());
+            n = 4;
+        } else {
+            header[1] = mask_bit | 127;
+            header[2..10].copy_from_slice(&(len as u64).to_be_bytes());
+            n = 10;
         }
-        header.encode(&mut self.out)?;
+        if let Some(k) = key {
+            header[n..n + 4].copy_from_slice(&k);
+            n += 4;
+        }
+        self.out.reserve(n + len);
+        self.out.extend_from_slice(header.get(..n).unwrap_or(&[]));
         let start = self.out.len();
         self.out.extend_from_slice(payload);
         if let Some(k) = key {

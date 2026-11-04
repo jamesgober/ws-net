@@ -137,7 +137,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sendable_ranges_at_boundaries() {
+    fn test_close_code_sendable_ranges_at_boundaries() {
         for (code, ok) in [
             (0, false),
             (999, false),

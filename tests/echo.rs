@@ -162,7 +162,7 @@ fn connect(
 }
 
 #[test]
-fn test_echo_over_localhost() {
+fn test_echo_localhost_socket_round_trip() {
     let (addr, server) = spawn_server();
     let handshake = ClientHandshake::new()
         .with_protocols(&["chat", "echo"])
@@ -200,7 +200,7 @@ fn test_echo_over_localhost() {
 }
 
 #[test]
-fn test_protocol_error_reaches_the_peer() {
+fn test_echo_protocol_error_close_reaches_peer() {
     // A text frame that is not UTF-8: the server must fail the connection
     // with a Close frame carrying 1007, and the peer must receive it.
     let (addr, server) = spawn_server();
@@ -216,7 +216,7 @@ fn test_protocol_error_reaches_the_peer() {
 }
 
 #[test]
-fn test_handshake_refusal_over_localhost() {
+fn test_echo_localhost_refusal_written() {
     let (addr, server) = spawn_server();
     let mut stream = TcpStream::connect(addr).unwrap();
     stream
@@ -233,7 +233,7 @@ fn test_handshake_refusal_over_localhost() {
 }
 
 #[test]
-fn test_foreign_origin_is_refused_by_policy() {
+fn test_echo_foreign_origin_refused_by_policy() {
     let (addr, server) = spawn_server();
     let mut stream = TcpStream::connect(addr).unwrap();
     let mut request = Vec::new();

@@ -1,4 +1,4 @@
-# ws-net &mdash; Engineering Directives
+# ws-net - Engineering Directives
 
 > Engineering standards and the definition of done for this project. Read alongside `REPS.md` (root, authoritative) and `dev/ROADMAP.md` (current phase). If anything here conflicts with `REPS.md`, `REPS.md` wins.
 > LexerSketch plan: `C:/Dev/libraries/Rust/lang-collection/_lexersketch/` (README rules of engagement, ARCHITECTURE, ISSUES, ROADMAP).
@@ -21,7 +21,7 @@ LexerSketch Studio talks to its engine over one WebSocket per window carrying JS
 
 ## 2. Engineering law (non-negotiable)
 
-- **Ours, not rented.** No third-party runtime dependency. First-party `-lang` crates only, wired when first used. Dev-only test tooling is allowed.
+- **Ours, not rented.** No third-party runtime dependency. First-party crates only, by published version (never a path), wired when first used. Dev-only test tooling is allowed.
 - **Performance.** Peak is the baseline: allocation-free hot paths where feasible, dense ids instead of maps, no "faster" claim without `criterion` numbers at realistic scale (100k+ items).
 - **Correctness.** Every invariant in section 4 is covered by property tests, cross-checked against a simple reference implementation wherever one can be written.
 - **Hostile-input hardening.** Any input this crate accepts may be adversarial: explicit budgets (depth, size, steps), iterative algorithms, no quadratic paths, no reachable panics.

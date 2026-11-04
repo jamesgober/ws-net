@@ -35,7 +35,7 @@ fn request_with(extra: &str, drop: &str) -> Vec<u8> {
 }
 
 #[test]
-fn test_rfc_6455_request_from_head() {
+fn test_from_head_rfc6455_request_accepted() {
     let mut wire = RFC_REQUEST.to_vec();
     wire.extend_from_slice(&[0x81, 0x80, 1, 2, 3, 4]); // a frame right behind
     let (hs, len) = ServerHandshake::from_head(&wire).unwrap().unwrap();
@@ -57,7 +57,7 @@ sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nsec-websocket-protocol: ch
 }
 
 #[test]
-fn test_from_head_waits_for_the_blank_line() {
+fn test_from_head_incomplete_returns_none() {
     for cut in 0..RFC_REQUEST.len() {
         assert_eq!(
             ServerHandshake::from_head(&RFC_REQUEST[..cut]),
@@ -68,7 +68,7 @@ fn test_from_head_waits_for_the_blank_line() {
 }
 
 #[test]
-fn test_from_head_and_from_request_agree() {
+fn test_from_head_and_from_request_same_result() {
     let (from_head, _) = ServerHandshake::from_head(RFC_REQUEST).unwrap().unwrap();
     let headers = [
         ("Host", &b"server.example.com"[..]),
@@ -84,7 +84,7 @@ fn test_from_head_and_from_request_agree() {
 }
 
 #[test]
-fn test_origin_is_optional_but_never_ambiguous() {
+fn test_origin_absent_accepted_repeated_refused() {
     let (hs, _) = ServerHandshake::from_head(&request_with("", "origin"))
         .unwrap()
         .unwrap();
@@ -107,7 +107,7 @@ fn test_origin_is_optional_but_never_ambiguous() {
 }
 
 #[test]
-fn test_host_is_required_once() {
+fn test_host_missing_or_repeated_refused() {
     assert_eq!(
         ServerHandshake::from_head(&request_with("", "host")),
         Err(HandshakeError::InvalidHost)
@@ -119,7 +119,7 @@ fn test_host_is_required_once() {
 }
 
 #[test]
-fn test_upgrade_and_connection_are_case_insensitive_lists() {
+fn test_upgrade_connection_mixed_case_lists_accepted() {
     let wire = b"GET / HTTP/1.1\r\nhost: a\r\nUPGRADE: h2c, WebSocket\r\n\
 connection: keep-alive\r\nConnection: x, UpGrAdE\r\n\
 sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version:   13  \r\n\r\n";
@@ -127,7 +127,7 @@ sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version:   13  \r\n
 }
 
 #[test]
-fn test_malformed_heads_are_refused() {
+fn test_from_head_malformed_heads_refused() {
     for bad in [
         &b"GET /chat HTTP/1.0\r\nHost: a\r\n\r\n"[..],
         b"GET  /chat HTTP/1.1\r\nHost: a\r\n\r\n",
@@ -159,7 +159,7 @@ fn test_malformed_heads_are_refused() {
 }
 
 #[test]
-fn test_head_budget() {
+fn test_head_over_budget_refused_431() {
     let mut big = b"GET / HTTP/1.1\r\nHost: a\r\nX-Pad: ".to_vec();
     big.resize(ServerHandshake::MAX_HEAD, b'p');
     assert_eq!(
@@ -172,7 +172,7 @@ fn test_head_budget() {
 }
 
 #[test]
-fn test_refusal_responses() {
+fn test_refusal_each_status_written() {
     let mut out = Vec::new();
     HandshakeError::UnsupportedVersion.write_response(&mut out);
     assert_eq!(
@@ -192,7 +192,7 @@ content-length: 0\r\nconnection: close\r\n\r\n"
 }
 
 #[test]
-fn test_client_round_trip_over_raw_heads() {
+fn test_client_handshake_raw_heads_round_trip() {
     let client = ClientHandshake::with_nonce(*b"the sample nonce")
         .with_protocols(&["chat", "superchat"])
         .with_origin("http://example.com");
@@ -219,7 +219,7 @@ fn test_client_round_trip_over_raw_heads() {
 }
 
 #[test]
-fn test_client_verify_head_refusals() {
+fn test_client_verify_head_bad_responses_refused() {
     let client = ClientHandshake::with_nonce([1; 16]);
     assert_eq!(
         client.verify_head(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n"),
@@ -248,7 +248,7 @@ fn test_client_verify_head_refusals() {
 }
 
 #[test]
-fn test_rfc_6455_accept_key_example() {
+fn test_accept_key_rfc6455_example_matches() {
     // RFC 6455 section 1.3.
     assert_eq!(
         accept_key(b"dGhlIHNhbXBsZSBub25jZQ==").as_str(),

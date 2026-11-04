@@ -45,10 +45,30 @@ jobs:
         run: cargo test --no-default-features
       - name: Build examples
         run: cargo build --examples
+      - name: Doc (default features)
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
       - name: Doc (all features)
         run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  targets:
+    name: 32-bit build (i686)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: Check (default features)
+        run: cargo check --target i686-unknown-linux-gnu --all-targets
+      - name: Check (no default features)
+        run: cargo check --target i686-unknown-linux-gnu --no-default-features
+      - name: Package
+        run: cargo package --allow-dirty
 
   security:
     name: Security (audit + deny)

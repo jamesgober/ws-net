@@ -395,7 +395,7 @@ proptest! {
 }
 
 #[test]
-fn test_hundred_thousand_frames() {
+fn test_receive_hundred_thousand_frames_delivered() {
     // Scale check: 100,000 masked messages in 64 KiB reads.
     let mut client = Connection::client_with_seed([5; 32]);
     for i in 0..100_000u32 {
@@ -418,7 +418,7 @@ fn test_hundred_thousand_frames() {
 }
 
 #[test]
-fn test_sixteen_mib_message_in_one_mib_frames() {
+fn test_receive_sixteen_mib_in_one_mib_frames_delivered() {
     // The largest default message, streamed through the 64 KiB input buffer.
     let data: Vec<u8> = (0..16 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
     let mut client = Connection::client_with_seed([6; 32]);
@@ -431,4 +431,114 @@ fn test_sixteen_mib_message_in_one_mib_frames() {
         false,
     );
     assert_eq!(events, vec![Ev::Binary(data)]);
+}
+
+/// A request head close to a real one, with fields drawn from a small
+/// pool so that valid, refused, and malformed heads all occur.
+fn head_bytes() -> impl Strategy<Value = Vec<u8>> {
+    let field = prop_oneof![
+        Just(&b"Host: a.example\r\n"[..]),
+        Just(&b"Upgrade: websocket\r\n"[..]),
+        Just(&b"Connection: Upgrade\r\n"[..]),
+        Just(&b"Sec-WebSocket-Version: 13\r\n"[..]),
+        Just(&b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"[..]),
+        Just(&b"Origin: https://a.example\r\n"[..]),
+        Just(&b"Sec-WebSocket-Protocol: a, \"b\"\r\n"[..]),
+        Just(&b"Content-Length: 1\r\n"[..]),
+        Just(&b"X: \r\n"[..]),
+        Just(&b"Bad Name: x\r\n"[..]),
+        Just(&b"X: a\rb\r\n"[..]),
+        Just(&b"X: a\nb\r\n"[..]),
+    ];
+    (prop::collection::vec(field, 0..12), any::<bool>()).prop_map(|(fields, end)| {
+        let mut wire = b"GET /x HTTP/1.1\r\n".to_vec();
+        for f in fields {
+            wire.extend_from_slice(f);
+        }
+        if end {
+            wire.extend_from_slice(b"\r\n\x81\x80\0\0\0\0");
+        }
+        wire
+    })
+}
+
+/// A reference same-origin test over the structured parts.
+fn reference_same(a: &(String, String, Option<u16>), b: &(String, String, Option<u16>)) -> bool {
+    let port = |(scheme, _, port): &(String, String, Option<u16>)| {
+        port.unwrap_or(if scheme.eq_ignore_ascii_case("https") {
+            443
+        } else {
+            80
+        })
+    };
+    a.0.eq_ignore_ascii_case(&b.0) && a.1.eq_ignore_ascii_case(&b.1) && port(a) == port(b)
+}
+
+fn origin_parts() -> impl Strategy<Value = (String, String, Option<u16>)> {
+    (
+        prop_oneof![
+            Just("http"),
+            Just("HTTP"),
+            Just("https"),
+            Just("Https"),
+            Just("ftp")
+        ],
+        prop_oneof![
+            Just("a.example"),
+            Just("A.Example"),
+            Just("b.example"),
+            Just("a.example.evil")
+        ],
+        prop_oneof![
+            Just(None),
+            Just(Some(80)),
+            Just(Some(443)),
+            Just(Some(8080))
+        ],
+    )
+        .prop_map(|(s, h, p)| (s.to_string(), h.to_string(), p))
+}
+
+fn serialize((scheme, host, port): &(String, String, Option<u16>)) -> String {
+    match port {
+        Some(p) => format!("{scheme}://{host}:{p}"),
+        None => format!("{scheme}://{host}"),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    #[test]
+    fn prop_head_reader_matches_from_head_for_every_cut(
+        wire in head_bytes(),
+        cuts in prop::collection::vec(1usize..40, 1..20),
+    ) {
+        let mut reader = ws_net::HeadReader::new();
+        let mut end = 0;
+        let mut got = None;
+        for step in cuts.iter().cycle().take(wire.len() + 1) {
+            end = (end + step).min(wire.len());
+            let r = reader.server(&wire[..end]);
+            if !matches!(r, Ok(None)) || end == wire.len() {
+                got = Some(r);
+                break;
+            }
+        }
+        let got = got.unwrap();
+        prop_assert_eq!(got, ws_net::ServerHandshake::from_head(&wire[..end]));
+    }
+
+    #[test]
+    fn prop_origin_allowlist_matches_reference(
+        allowed in prop::collection::vec(origin_parts(), 1..4),
+        origin in origin_parts(),
+    ) {
+        let web = |p: &(String, String, Option<u16>)| p.0.eq_ignore_ascii_case("http") || p.0.eq_ignore_ascii_case("https");
+        let entries: Vec<String> = allowed.iter().filter(|p| web(p)).map(serialize).collect();
+        let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        let policy = ws_net::OriginPolicy::allow(&refs).unwrap();
+        let expect = web(&origin) && allowed.iter().filter(|p| web(p)).any(|a| reference_same(a, &origin));
+        prop_assert_eq!(policy.permits(Some(&serialize(&origin)), "unused.example"), expect);
+    }
 }

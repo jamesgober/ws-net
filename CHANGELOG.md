@@ -11,13 +11,81 @@
 
 ## [Unreleased]
 
+---
+
+## [0.3.0] - 2026-11-04
+
+Design lock and core corrections: a one-call server accept with the
+same-origin policy, a resumable head reader with linear work, masking
+seeds from the OS cryptographic random source, and the shared HTTP grammar
+from `parse-net`. The whole 1.0 API is now listed in `docs/API.md` with the
+version each item lands in.
+
 ### Added
+
+- `accept(bytes)`, the Tier 1 server entry point: validates the request,
+  applies the same-origin policy, writes the `101`, and returns an
+  `Accepted { response, connection, consumed, handshake }` whose server
+  `Connection` already holds the frames that followed the head.
+- `Acceptor` (`new`, `with_policy`, `accept`): the resumable form, for a
+  head read in pieces.
+- `AcceptPolicy` (`new`, `with_origins`, `with_protocols`,
+  `require_protocol`, `with_limits`, `origins`, `limits`, `check`) and
+  `Decision`; `ServerHandshake::accept(policy, out)`.
+- `OriginPolicy` (`same_origin`, `allow`, `any_origin`, `allow_missing`,
+  `permits`): RFC 6454 origin comparison through `parse-net`, never by
+  substring; `null` and non-web schemes never match.
+- `HeadReader` (`new`, `server`, `client`, `reset`) and `Verified`: a
+  resumable strict head reader whose total scanning work is linear in the
+  head.
+- `HandshakeError::UnexpectedBody`, `OriginRefused` (403),
+  `ProtocolRequired`, `RandomUnavailable`; `WsError::RandomUnavailable`.
+- `Connection::try_client`, `ClientHandshake::try_new`;
+  `Connection::is_open`, `can_send`.
+- `Limits::with_send_frame` and `send_frame`: the outgoing frame size,
+  separate from the incoming frame budget (it follows the budget until set,
+  so existing behaviour is unchanged).
+- `ServerHandshake::select_protocol`, `ServerHandshake::MAX_PROTOCOLS`.
+- `frame::Opcode::is_data`, `frame::MAX_HEADER_LEN`,
+  `MAX_CONTROL_PAYLOAD`, `MAX_PAYLOAD_LEN`; `VERSION`.
+- Example `accept_policy`; `echo_server` now accepts through an `Acceptor`.
+- `tests/attacks.rs` (cross-site hijacking, smuggled bodies, slow heads,
+  Pong and frame floods, close-reason log injection, HTTP bytes after the
+  upgrade); every protocol case run in pieces of every size from 1 to 15
+  bytes and split in two at every point; properties for `HeadReader`
+  against `from_head` and `OriginPolicy` against a reference; a
+  `size_of::<Connection>()` bound of 512 bytes.
+- `dev/PLAN.md` with the requirements and the decision log; CI builds the
+  docs with default features too, and checks a 32-bit target.
 
 ### Changed
 
-### Fixed
+- Tokens, OWS, field-value checks, and comma lists come from `parse-net`
+  0.9 (first party, no dependencies of its own). Lists are RFC 9110 lists:
+  a comma inside a quoted string does not split, and a value that does not
+  parse holds nothing, so `Upgrade: websocket, "x` is not an upgrade. The
+  browser handshake benchmark is 12.7% faster.
+- Masking-key seeds and nonces come from `mod-rand`'s OS tier (feature
+  `std`) instead of `RandomState`. If the OS source fails,
+  `Connection::client` returns a connection that refuses every send and
+  `ClientHandshake::new` one that refuses to write its request.
+- `HandshakeError::status` and `write_response` cover 403 and 500.
+- Test names follow `test_<subject>_<condition>_<expected>`.
 
 ### Security
+
+- An upgrade request that declares a body (`Transfer-Encoding`, or any
+  `Content-Length` but a lone `0`) is refused: the bytes after the head are
+  frames, and a front proxy that read a body would disagree about where
+  they start (request smuggling).
+- The Tier 1 path refuses pages from other origins (cross-site WebSocket
+  hijacking, CWE-1385) by default.
+- A head sent one byte per read no longer costs quadratic scanning work
+  when read through `HeadReader` or `Acceptor` (the class of
+  CVE-2023-43669).
+- The 0.2 masking seed was documented as OS-random but came from
+  `RandomState` (one OS draw per thread, a counter, and the clock); it now
+  comes from the OS cryptographic random source.
 
 ---
 
@@ -106,7 +174,7 @@ Found by the adversarial review before release; each has a regression test.
 
 ## [0.1.0] - 2026-10-08
 
-Initial scaffold and repository bootstrap. No domain logic yet &mdash; this release establishes the structure, tooling, and quality gates the implementation will be built on.
+Initial scaffold and repository bootstrap. No domain logic yet: this release establishes the structure, tooling, and quality gates the implementation will be built on.
 
 ### Added
 
@@ -117,6 +185,7 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jamesgober/ws-net/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamesgober/ws-net/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/ws-net/releases/tag/v0.1.0

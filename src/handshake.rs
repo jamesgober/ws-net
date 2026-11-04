@@ -18,18 +18,17 @@ use alloc::{
 };
 use core::fmt;
 
+use parse_net::{list::contains_token, text::is_token};
+
 use crate::{
     base64,
     error::HandshakeError,
-    head::{self, is_token, is_visible},
+    head::{self, is_visible},
     sha1::Sha1,
 };
 
 /// The GUID RFC 6455 section 1.3 appends to the client's key.
 const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-/// The most subprotocols accepted from one request.
-const MAX_PROTOCOLS: usize = 64;
 
 /// A `Sec-WebSocket-Accept` value: base64 of
 /// `SHA-1(key || "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")`, always 28 ASCII
@@ -105,16 +104,10 @@ pub fn accept_key(key: &[u8]) -> AcceptKey {
     AcceptKey(out)
 }
 
-/// The non-empty elements of a comma-separated field value.
-fn list(value: &[u8]) -> impl Iterator<Item = &[u8]> {
-    value
-        .split(|&b| b == b',')
-        .map(head::trim_ows)
-        .filter(|e| !e.is_empty())
-}
-
+/// Whether the comma list `value` holds `token` (ASCII case-insensitive).
+/// A value that is not a valid RFC 9110 list holds nothing (fail closed).
 fn list_has(value: &[u8], token: &[u8]) -> bool {
-    list(value).any(|e| e.eq_ignore_ascii_case(token))
+    contains_token([value], token)
 }
 
 /// Text from bytes already checked to be visible ASCII.
@@ -173,6 +166,17 @@ impl ServerHandshake {
     /// ```
     pub const MAX_HEAD: usize = head::MAX_HEAD;
 
+    /// The most subprotocols accepted from one request, over all its
+    /// `Sec-WebSocket-Protocol` fields; one more is
+    /// [`HandshakeError::InvalidProtocol`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ws_net::ServerHandshake::MAX_PROTOCOLS, 64);
+    /// ```
+    pub const MAX_PROTOCOLS: usize = 64;
+
     /// Validates a client's opening request (RFC 6455 section 4.2.1) from
     /// its method, request target, and header fields, as an HTTP layer
     /// parsed them. With `http-net`:
@@ -183,7 +187,9 @@ impl ServerHandshake {
     /// `upgrade` (case-insensitive, in any field of that name);
     /// exactly one `Sec-WebSocket-Version`, equal to `13`; exactly one
     /// `Sec-WebSocket-Key`, the canonical base64 of 16 bytes; at most one
-    /// `Origin`; every offered subprotocol a token, at most 64. The HTTP
+    /// `Origin`; every offered subprotocol a token, at most 64; no body (no
+    /// `Transfer-Encoding`, no `Content-Length` other than `0`), because the
+    /// bytes after the head are the first frames. The HTTP
     /// layer is trusted for the rest (an HTTP/1.1 request, well-formed
     /// fields); [`from_head`](Self::from_head) checks those too.
     ///
@@ -197,7 +203,8 @@ impl ServerHandshake {
     /// [`MissingKey`](HandshakeError::MissingKey),
     /// [`InvalidKey`](HandshakeError::InvalidKey),
     /// [`InvalidOrigin`](HandshakeError::InvalidOrigin),
-    /// [`InvalidProtocol`](HandshakeError::InvalidProtocol). Answer with
+    /// [`InvalidProtocol`](HandshakeError::InvalidProtocol),
+    /// [`UnexpectedBody`](HandshakeError::UnexpectedBody). Answer with
     /// [`HandshakeError::write_response`].
     ///
     /// # Examples
@@ -238,6 +245,7 @@ impl ServerHandshake {
         let (mut origins, mut origin): (usize, &[u8]) = (0, &[]);
         let (mut keys, mut key): (usize, &[u8]) = (0, &[]);
         let (mut versions, mut version_ok) = (0usize, false);
+        let mut body = false;
         let mut protocols = Vec::new();
         for (name, value) in headers {
             if name.eq_ignore_ascii_case("host") {
@@ -256,14 +264,25 @@ impl ServerHandshake {
             } else if name.eq_ignore_ascii_case("origin") {
                 origins += 1;
                 origin = value;
+            } else if name.eq_ignore_ascii_case("transfer-encoding") {
+                body = true;
+            } else if name.eq_ignore_ascii_case("content-length") {
+                // Only a lone `0` declares no body; anything else (another
+                // number, a list, garbage) is refused, never interpreted.
+                body |= value != b"0";
             } else if name.eq_ignore_ascii_case("sec-websocket-protocol") {
-                for p in list(value) {
-                    if !is_token(p) || protocols.len() == MAX_PROTOCOLS {
+                let offered =
+                    parse_net::list(value).map_err(|_| HandshakeError::InvalidProtocol)?;
+                for p in offered.iter() {
+                    if !is_token(p) || protocols.len() == Self::MAX_PROTOCOLS {
                         return Err(HandshakeError::InvalidProtocol);
                     }
                     protocols.push(ascii(p));
                 }
             }
+        }
+        if body {
+            return Err(HandshakeError::UnexpectedBody);
         }
         if hosts != 1 || !is_visible(host) {
             return Err(HandshakeError::InvalidHost);
@@ -393,6 +412,32 @@ impl ServerHandshake {
         self.protocols.iter().map(String::as_str)
     }
 
+    /// The first protocol of the server's `preference` list that the client
+    /// offered, or `None`. Protocols are tokens and compared exactly (case
+    /// matters), so the server's order wins over the client's.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::ServerHandshake;
+    ///
+    /// let h = ServerHandshake::from_request("GET", "/", [
+    ///     ("Host", &b"a"[..]), ("Upgrade", b"websocket"), ("Connection", b"Upgrade"),
+    ///     ("Sec-WebSocket-Version", b"13"), ("Sec-WebSocket-Key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+    ///     ("Sec-WebSocket-Protocol", b"v1.rpc, v2.rpc"),
+    /// ])?;
+    /// assert_eq!(h.select_protocol(&["v2.rpc", "v1.rpc"]), Some("v2.rpc"));
+    /// assert_eq!(h.select_protocol(&["V2.RPC"]), None);
+    /// # Ok::<(), ws_net::HandshakeError>(())
+    /// ```
+    #[must_use]
+    pub fn select_protocol<'p>(&self, preference: &[&'p str]) -> Option<&'p str> {
+        preference
+            .iter()
+            .copied()
+            .find(|p| self.protocols.iter().any(|offered| offered == p))
+    }
+
     /// Writes the complete `101 Switching Protocols` response, selecting
     /// `protocol` (which must be one the client offered) or none.
     /// Extensions are never accepted. With `http-net`, send
@@ -472,11 +517,20 @@ pub struct ClientHandshake {
     expected: AcceptKey,
     protocols: Vec<String>,
     origin: Option<String>,
+    /// Set when the OS random source failed: the nonce is not random, so
+    /// the request is never written.
+    unusable: bool,
 }
 
 impl ClientHandshake {
-    /// A handshake with a fresh random nonce from the operating system's
-    /// random source (feature `std`).
+    /// A handshake with a fresh 16-byte nonce from the operating system's
+    /// cryptographic random source (feature `std`).
+    ///
+    /// The OS source can fail (a sandbox that filters the system call). This
+    /// constructor then fails closed: [`write_request`](Self::write_request)
+    /// returns [`HandshakeError::RandomUnavailable`] and writes nothing; it
+    /// never falls back to a predictable nonce and never panics. Use
+    /// [`try_new`](Self::try_new) to see the failure up front.
     ///
     /// # Examples
     ///
@@ -489,10 +543,34 @@ impl ClientHandshake {
     #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     #[must_use]
     pub fn new() -> Self {
-        let seed = crate::keys::os_seed();
+        Self::try_new().unwrap_or_else(|_| {
+            let mut handshake = Self::with_nonce([0; 16]);
+            handshake.unusable = true;
+            handshake
+        })
+    }
+
+    /// A handshake with a fresh nonce from the operating system's
+    /// cryptographic random source, or an error when that source fails
+    /// (feature `std`).
+    ///
+    /// # Errors
+    ///
+    /// [`HandshakeError::RandomUnavailable`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let client = ws_net::ClientHandshake::try_new()?;
+    /// assert_eq!(client.key().len(), 24);
+    /// # Ok::<(), ws_net::HandshakeError>(())
+    /// ```
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+    pub fn try_new() -> Result<Self, HandshakeError> {
         let mut nonce = [0u8; 16];
-        nonce.copy_from_slice(&seed[..16]);
-        Self::with_nonce(nonce)
+        mod_rand::tier3::fill_bytes(&mut nonce).map_err(|_| HandshakeError::RandomUnavailable)?;
+        Ok(Self::with_nonce(nonce))
     }
 
     /// A handshake with a caller-chosen 16-byte nonce. RFC 6455 requires
@@ -510,6 +588,7 @@ impl ClientHandshake {
             key,
             protocols: Vec::new(),
             origin: None,
+            unusable: false,
         }
     }
 
@@ -578,6 +657,9 @@ impl ClientHandshake {
         path: &str,
         out: &mut Vec<u8>,
     ) -> Result<(), HandshakeError> {
+        if self.unusable {
+            return Err(HandshakeError::RandomUnavailable);
+        }
         let origin_ok = self
             .origin
             .as_deref()
@@ -668,7 +750,9 @@ impl ClientHandshake {
                 accepts += 1;
                 accept_ok = value == self.expected.as_bytes();
             } else if name.eq_ignore_ascii_case("sec-websocket-extensions") {
-                if list(value).next().is_some() {
+                // None was offered, so any element (or a value that is not a
+                // list at all) is one the client did not ask for.
+                if parse_net::list(value).map_or(true, |l| !l.is_empty()) {
                     return Err(HandshakeError::UnexpectedExtension);
                 }
             } else if name.eq_ignore_ascii_case("sec-websocket-protocol") {
@@ -728,6 +812,149 @@ impl ClientHandshake {
     }
 }
 
+/// What a client learns from a verified `101` response.
+///
+/// # Examples
+///
+/// See [`HeadReader::client`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Verified<'a> {
+    /// The subprotocol the server selected, one the client offered.
+    pub protocol: Option<&'a str>,
+}
+
+/// A resumable reader for the raw handshake head, for a server or a client
+/// reading from a socket in pieces.
+///
+/// [`ServerHandshake::from_head`] and [`ClientHandshake::verify_head`] scan
+/// the whole buffer on every call, so a peer that sends its head one byte
+/// per read makes them do quadratic work (up to about 134 million byte
+/// visits for a 16 KiB head; the class of CVE-2023-43669). A `HeadReader`
+/// remembers how far it scanned: pass it the same buffer each time, grown
+/// at the end, and the total work is linear in the head however it is cut.
+/// The rules are those of `from_head` and `verify_head`.
+///
+/// After it returns a head or an error, call [`reset`](Self::reset) before
+/// reading another head.
+///
+/// # Examples
+///
+/// ```
+/// use ws_net::HeadReader;
+///
+/// let request = b"GET /chat HTTP/1.1\r\nHost: a.example\r\nUpgrade: websocket\r\n\
+///     Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+///     Sec-WebSocket-Version: 13\r\n\r\n";
+/// let mut reader = HeadReader::new();
+/// let mut buffer = Vec::new();
+/// let mut done = None;
+/// for &byte in request.iter() {
+///     buffer.push(byte); // one byte per read, the worst case
+///     if let Some(found) = reader.server(&buffer)? {
+///         done = Some(found);
+///     }
+/// }
+/// let (handshake, len) = done.expect("complete");
+/// assert_eq!((handshake.target(), len), ("/chat", request.len()));
+/// # Ok::<(), ws_net::HandshakeError>(())
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct HeadReader {
+    scan: head::Scan,
+}
+
+impl HeadReader {
+    /// A reader at the start of a head.
+    ///
+    /// # Examples
+    ///
+    /// See [`HeadReader`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reads a client's request head from `bytes` (the same buffer as on
+    /// the previous call, grown at the end): `Ok(None)` until the head is
+    /// complete, then the handshake and the head's length, as
+    /// [`ServerHandshake::from_head`].
+    ///
+    /// # Errors
+    ///
+    /// As [`ServerHandshake::from_head`]; [`HandshakeError::InvalidRequest`]
+    /// when `bytes` is shorter than what was already scanned.
+    ///
+    /// # Examples
+    ///
+    /// See [`HeadReader`].
+    pub fn server(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<Option<(ServerHandshake, usize)>, HandshakeError> {
+        let Some(head) = head::split_resume(&mut self.scan, bytes)? else {
+            return Ok(None);
+        };
+        let (method, target) =
+            head::request_line(head.first).ok_or(HandshakeError::MalformedHead)?;
+        let handshake = ServerHandshake::from_request(method, target, head.fields())?;
+        Ok(Some((handshake, head.len)))
+    }
+
+    /// Reads a server's response head from `bytes` (the same buffer as on
+    /// the previous call, grown at the end) and verifies it against
+    /// `handshake`: `Ok(None)` until the head is complete, then what was
+    /// verified and the head's length, as [`ClientHandshake::verify_head`].
+    ///
+    /// # Errors
+    ///
+    /// As [`ClientHandshake::verify_head`];
+    /// [`HandshakeError::InvalidRequest`] when `bytes` is shorter than what
+    /// was already scanned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{ClientHandshake, HeadReader};
+    ///
+    /// let client = ClientHandshake::with_nonce(*b"the sample nonce");
+    /// let response = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
+    ///     Connection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
+    /// let mut reader = HeadReader::new();
+    /// assert_eq!(reader.client(&client, &response[..20])?, None);
+    /// let (verified, len) = reader.client(&client, response)?.expect("complete");
+    /// assert_eq!((verified.protocol, len), (None, response.len()));
+    /// # Ok::<(), ws_net::HandshakeError>(())
+    /// ```
+    pub fn client<'c>(
+        &mut self,
+        handshake: &'c ClientHandshake,
+        bytes: &[u8],
+    ) -> Result<Option<(Verified<'c>, usize)>, HandshakeError> {
+        let Some(head) = head::split_resume(&mut self.scan, bytes)? else {
+            return Ok(None);
+        };
+        let status = head::status_line(head.first).ok_or(HandshakeError::MalformedHead)?;
+        let protocol = handshake.verify(status, head.fields())?;
+        Ok(Some((Verified { protocol }, head.len)))
+    }
+
+    /// Starts over, for the next head.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut reader = ws_net::HeadReader::new();
+    /// assert_eq!(reader.server(b"GET / HTTP/1.1\r\n")?, None);
+    /// reader.reset();
+    /// assert_eq!(reader, ws_net::HeadReader::new());
+    /// # Ok::<(), ws_net::HandshakeError>(())
+    /// ```
+    pub fn reset(&mut self) {
+        self.scan = head::Scan::default();
+    }
+}
+
 #[cfg(feature = "std")]
 impl Default for ClientHandshake {
     fn default() -> Self {
@@ -759,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn test_accept_key_rfc_example() {
+    fn test_accept_key_rfc_sample_matches() {
         assert_eq!(
             accept_key(b"dGhlIHNhbXBsZSBub25jZQ==").as_str(),
             "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
@@ -771,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn test_server_rejections() {
+    fn test_server_invalid_requests_refused() {
         let ok = rfc_headers();
         assert!(ServerHandshake::from_request("GET", "/", ok).is_ok());
         assert_eq!(
@@ -860,7 +1087,55 @@ mod tests {
     }
 
     #[test]
-    fn test_client_verify_rules() {
+    fn test_server_lists_rfc9110_quote_aware() {
+        let with = |name: &'static str, value: &'static [u8]| {
+            let mut h: Vec<(&str, &[u8])> = rfc_headers().to_vec();
+            h.push((name, value));
+            ServerHandshake::from_request("GET", "/", h)
+        };
+        // A comma inside a quoted string does not split, and a quoted
+        // string is not a token.
+        assert_eq!(
+            with("Sec-WebSocket-Protocol", b"\"a,b\""),
+            Err(HandshakeError::InvalidProtocol)
+        );
+        // An unterminated quote or a control byte is not a list at all.
+        assert_eq!(
+            with("Sec-WebSocket-Protocol", b"chat, \"x"),
+            Err(HandshakeError::InvalidProtocol)
+        );
+        assert_eq!(
+            with("Sec-WebSocket-Protocol", b"chat\x00"),
+            Err(HandshakeError::InvalidProtocol)
+        );
+        // `upgrade` inside quotes or a comment is not the token.
+        let mut h = without(2);
+        h.push(("Connection", b"\"upgrade\""));
+        assert_eq!(
+            ServerHandshake::from_request("GET", "/", h),
+            Err(HandshakeError::MissingConnectionUpgrade)
+        );
+        let mut h = without(1);
+        h.push(("Upgrade", b"(websocket) h2c"));
+        assert_eq!(
+            ServerHandshake::from_request("GET", "/", h),
+            Err(HandshakeError::MissingUpgrade)
+        );
+        // A list that does not parse holds nothing (fail closed).
+        let mut h = without(1);
+        h.push(("Upgrade", b"websocket, \"x"));
+        assert_eq!(
+            ServerHandshake::from_request("GET", "/", h),
+            Err(HandshakeError::MissingUpgrade)
+        );
+        // Comments and empty elements around the tokens are fine.
+        let mut h = without(2);
+        h.push(("Connection", b"keep-alive (legacy), , Upgrade"));
+        assert!(ServerHandshake::from_request("GET", "/", h).is_ok());
+    }
+
+    #[test]
+    fn test_client_verify_each_rule_enforced() {
         let client = ClientHandshake::with_nonce(*b"the sample nonce").with_protocols(&["chat"]);
         let good: [(&str, &[u8]); 4] = [
             ("Upgrade", b"WebSocket"),
@@ -878,6 +1153,13 @@ mod tests {
         let mut empty_ext = good.to_vec();
         empty_ext.push(("Sec-WebSocket-Extensions", b" , "));
         assert_eq!(client.verify(101, empty_ext), Ok(Some("chat")));
+        // A value that is not a list is refused, not read as empty.
+        let mut broken_ext = good.to_vec();
+        broken_ext.push(("Sec-WebSocket-Extensions", b"\"x"));
+        assert_eq!(
+            client.verify(101, broken_ext),
+            Err(HandshakeError::UnexpectedExtension)
+        );
         let mut other = good.to_vec();
         other[3] = ("Sec-WebSocket-Protocol", b"superchat");
         assert_eq!(

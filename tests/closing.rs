@@ -8,7 +8,7 @@ use common::{Ev, client_frame, close_payload, decode_frames, drive, server_frame
 use ws_net::{CloseCode, Connection, Event, State, WsError, frame::Opcode};
 
 #[test]
-fn test_server_initiated_close() {
+fn test_close_server_initiated_completes() {
     let mut server = Connection::server();
     server.close(CloseCode::GOING_AWAY, "restart").unwrap();
     assert_eq!(server.state(), State::Closing);
@@ -61,7 +61,7 @@ fn test_server_initiated_close() {
 }
 
 #[test]
-fn test_client_answers_server_close_with_masked_close() {
+fn test_client_close_from_server_echoed_masked() {
     let mut client = Connection::client_with_seed([4; 32]);
     let wire = server_frame(0x8, true, &close_payload(1000, "bye"));
     let (events, out) = drive(&mut client, &[&wire], false);
@@ -80,7 +80,7 @@ fn test_client_answers_server_close_with_masked_close() {
 }
 
 #[test]
-fn test_client_initiated_close_completes() {
+fn test_close_client_initiated_completes() {
     let mut client = Connection::client_with_seed([5; 32]);
     let mut server = Connection::server();
     client.close(CloseCode::NORMAL, "done").unwrap();
@@ -98,7 +98,7 @@ fn test_client_initiated_close_completes() {
 }
 
 #[test]
-fn test_close_during_outgoing_fragmented_message() {
+fn test_close_during_outgoing_fragments_allowed() {
     // A Close may interrupt our own fragmented message; nothing may follow.
     let mut server = Connection::server();
     server.send_text_fragment("par", false).unwrap();
@@ -113,7 +113,7 @@ fn test_close_during_outgoing_fragmented_message() {
 }
 
 #[test]
-fn test_pending_pong_goes_out_before_close() {
+fn test_pong_pending_written_before_close() {
     // A Ping answered before this end closes: the Pong precedes the Close.
     let mut server = Connection::server();
     let _ = server.feed(&client_frame(0x9, true, b"hb"));
@@ -130,7 +130,7 @@ fn test_pending_pong_goes_out_before_close() {
 }
 
 #[test]
-fn test_eof_while_closing_is_abnormal() {
+fn test_eof_while_closing_reports_1006() {
     let mut server = Connection::server();
     server.close(CloseCode::NORMAL, "").unwrap();
     server.advance_output(usize::MAX);
@@ -141,7 +141,7 @@ fn test_eof_while_closing_is_abnormal() {
 }
 
 #[test]
-fn test_eof_after_close_is_clean() {
+fn test_eof_after_close_handshake_clean() {
     let mut server = Connection::server();
     let wire = client_frame(0x8, true, b"");
     let (events, _) = drive(&mut server, &[&wire], true);
@@ -150,7 +150,7 @@ fn test_eof_after_close_is_clean() {
 }
 
 #[test]
-fn test_failure_after_close_sent_queues_nothing_more() {
+fn test_failure_after_close_sent_queues_nothing() {
     // Once this end has sent its Close, a protocol error must not queue a
     // second Close frame.
     let mut server = Connection::server();
@@ -162,7 +162,7 @@ fn test_failure_after_close_sent_queues_nothing_more() {
 }
 
 #[test]
-fn test_failure_reports_once_then_closed() {
+fn test_failure_reported_once_then_closed() {
     let mut server = Connection::server();
     let _ = server.feed(&[0x83, 0x80, 0, 0, 0, 0]);
     assert_eq!(server.poll().unwrap_err(), WsError::ReservedOpcode);

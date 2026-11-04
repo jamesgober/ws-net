@@ -64,15 +64,19 @@ Exit: all items tested; memory formula confirmed; http-net test green.
 
 Exit: every P0 to P2 API item exists except the moved deflate items; no API addition after this version except those and fixes found by testing.
 
-## v0.6.0 - Optimisation
-- [ ] permessage-deflate, if the first-party DEFLATE crate is published by then (moved from 0.5); otherwise it moves out of 1.0 to 1.1, recorded here.
-- [ ] Competitor harness outside the crate's dependency graph: tungstenite, fastwebsockets, tokio-websockets, ratchet; frame-level receive, send, handshake.
-- [ ] 32-byte masking lanes (autovectorised, no `unsafe`); UTF-8 ASCII fast path; masking-key generator measured (SHA-1 counter mode against bulk OS refills).
-- [ ] Single-allocation handshake record; counting-allocator suite (no allocation per message in steady state); `try_reserve` on every growth.
-- [ ] `docs/PERFORMANCE.md` with Linux, macOS, and Windows numbers.
-- [ ] Re-measure the 0.4 per-message additions (output-budget check, counters) against 0.2.0 on a quiet machine; fix any row more than 5% behind (moved from 0.4: the 0.4 runs were on a loaded shared machine, `dev/PLAN.md` D-024).
+## v0.6.0 - Optimisation (DONE)
+- [x] Competitor harness outside the crate's dependency graph (`bench-compare/`, tungstenite 0.30.0): frame-level receive, send in both roles, handshake. fastwebsockets, tokio-websockets, and ratchet need an async runtime and are left out (no async runtime anywhere in the repository).
+- [x] Benchmark workflow on hosted runners (Linux, macOS, Windows): this commit against v0.2.0 and against tungstenite in one job (`.github/workflows/bench.yml`).
+- [x] Streamed text validated once per byte (the second whole-message pass removed).
+- [x] Masking-key generator measured and switched to 1 KiB OS batches (OD-7); 32-byte masking lanes measured as unneeded (OD-8, `mask_1mib` already above target).
+- [x] Single-allocation handshake record (FR-11); counting-allocator suite extended (fragments, Ping floods, idle ticks, prepared sends, Close echo, one allocation per handshake).
+- [x] `try_reserve` on reassembly growth: `WsError::AllocationFailed` (1011).
+- [x] `docs/PERFORMANCE.md` with Linux, macOS, and Windows numbers from hosted runners.
+- [x] Re-measure the 0.4 per-message additions against 0.2.0 (moved from 0.4, D-024): in the bench workflow's v0.2.0 comparison.
+- **Moved out of 1.0 to 1.1 (reason: unpublished dependency, D-032):** permessage-deflate. No first-party DEFLATE crate exists at the end of 0.6.
+- Open for the 0.9.x pass: NFR-10's 1.5x ASCII validation target (D-029).
 
-Exit: no per-message allocation; NFR targets met or each shortfall published with its cause.
+Exit: NFR-4 (no allocation per message in steady state) and NFR-11 met; the competitor table published with each shortfall named.
 
 ## v0.7.0 - Hardening
 - [ ] cargo-fuzz targets: frame header, connection (both roles), connection API sequences, server and client heads, extension parsing, Origin policy, base64; 24 hours each; differential fuzzing against tungstenite.

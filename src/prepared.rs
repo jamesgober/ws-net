@@ -91,7 +91,9 @@ impl PreparedMessage {
     }
 
     fn encode(opcode: Opcode, data: &[u8], limits: &Limits) -> Self {
-        let max = usize::try_from(limits.send_frame()).unwrap_or(usize::MAX).max(1);
+        let max = usize::try_from(limits.send_frame())
+            .unwrap_or(usize::MAX)
+            .max(1);
         let count = data.len().div_ceil(max).max(1);
         let mut frames = Vec::with_capacity(data.len() + count * 10);
         let mut pieces = data.chunks(max);

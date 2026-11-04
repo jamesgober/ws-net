@@ -39,7 +39,9 @@ fn test_blocking_echo_round_trip_and_close() {
         seen
     });
     let stream = TcpStream::connect(&addr).unwrap();
-    let hs = ClientHandshake::try_new().unwrap().with_origin(&format!("http://{addr}"));
+    let hs = ClientHandshake::try_new()
+        .unwrap()
+        .with_origin(&format!("http://{addr}"));
     let (mut ws, protocol) = blocking::connect_with(stream, &addr, "/echo", &hs).unwrap();
     assert_eq!(protocol, None);
     ws.send_text("hello").unwrap();
@@ -70,10 +72,15 @@ fn test_blocking_foreign_origin_refused_403() {
         blocking::accept(stream).map(|_| ())
     });
     let stream = TcpStream::connect(&addr).unwrap();
-    let hs = ClientHandshake::try_new().unwrap().with_origin("https://evil.example");
+    let hs = ClientHandshake::try_new()
+        .unwrap()
+        .with_origin("https://evil.example");
     let e = blocking::connect_with(stream, &addr, "/", &hs).unwrap_err();
     assert!(
-        matches!(e, blocking::Error::Handshake(HandshakeError::NotSwitching(403))),
+        matches!(
+            e,
+            blocking::Error::Handshake(HandshakeError::NotSwitching(403))
+        ),
         "{e}"
     );
     assert!(matches!(
@@ -109,7 +116,9 @@ fn test_blocking_idle_timeout_through_read_timeout() {
     let (l, addr) = listener();
     let server = thread::spawn(move || {
         let (stream, _) = l.accept().unwrap();
-        stream.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
         let policy = AcceptPolicy::new()
             .with_keepalive(Keepalive::new().with_idle_timeout(Duration::from_millis(150)));
         let (mut ws, _) = blocking::accept_with(stream, &policy).unwrap();
@@ -119,7 +128,10 @@ fn test_blocking_idle_timeout_through_read_timeout() {
     let mut ws = blocking::connect(stream, &addr, "/").unwrap();
     // Say nothing; the server gives up and sends 1001.
     let got = server.join().unwrap();
-    assert!(matches!(got, Err(blocking::Error::Protocol(WsError::IdleTimeout))), "{got:?}");
+    assert!(
+        matches!(got, Err(blocking::Error::Protocol(WsError::IdleTimeout))),
+        "{got:?}"
+    );
     assert_eq!(
         ws.read().unwrap(),
         Message::Close(Some((CloseCode::GOING_AWAY, String::new())))
@@ -141,6 +153,9 @@ fn test_blocking_from_upgraded_large_leftover_taken_in_pieces() {
         Connection::server(),
     );
     for i in 0..200u32 {
-        assert_eq!(ws.read().unwrap(), Message::Binary(vec![(i % 251) as u8; 1000]));
+        assert_eq!(
+            ws.read().unwrap(),
+            Message::Binary(vec![(i % 251) as u8; 1000])
+        );
     }
 }

@@ -20,7 +20,7 @@ mod common;
 use common::{Ev, client_frame, drive, split};
 use proptest::prelude::*;
 use ws_net::{
-    Connection, Limits, WsError,
+    Connection, Event, Limits, WsError,
     frame::{FrameHeader, Opcode, apply_mask},
 };
 
@@ -540,5 +540,150 @@ proptest! {
         let policy = ws_net::OriginPolicy::allow(&refs).unwrap();
         let expect = web(&origin) && allowed.iter().filter(|p| web(p)).any(|a| reference_same(a, &origin));
         prop_assert_eq!(policy.permits(Some(&serialize(&origin)), "unused.example"), expect);
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Op {
+    Text(usize),
+    Binary(usize),
+    Ping,
+    Close,
+    Drain(usize),
+    PeerPing,
+}
+
+fn op() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        (0usize..3000).prop_map(Op::Text),
+        (0usize..70_000).prop_map(Op::Binary),
+        Just(Op::Ping),
+        Just(Op::Close),
+        (0usize..5000).prop_map(Op::Drain),
+        Just(Op::PeerPing),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    #[test]
+    fn prop_output_never_exceeds_budget_plus_headroom(
+        budget in 0u64..200_000,
+        ops in prop::collection::vec(op(), 1..60),
+        client in any::<bool>(),
+    ) {
+        let limits = Limits::new().with_max_output(budget);
+        let mut conn = if client {
+            Connection::client_with_seed([8; 32])
+        } else {
+            Connection::server()
+        }
+        .with_limits(limits);
+        let ping = if client {
+            common::server_frame(0x9, true, &[1; 125])
+        } else {
+            client_frame(0x9, true, &[1; 125])
+        };
+        for op in ops {
+            let before = conn.output().to_vec();
+            let r = match op {
+                Op::Text(n) => conn.send_text(&"t".repeat(n)),
+                Op::Binary(n) => conn.send_binary(&vec![0; n]),
+                Op::Ping => conn.send_ping(b"p"),
+                Op::Close => conn.close(ws_net::CloseCode::NORMAL, "bye"),
+                Op::Drain(n) => {
+                    conn.advance_output(n);
+                    Ok(())
+                }
+                Op::PeerPing => {
+                    let _ = conn.feed(&ping);
+                    let _ = conn.poll();
+                    Ok(())
+                }
+            };
+            if r == Err(WsError::OutputFull) {
+                prop_assert_eq!(conn.output(), &before[..], "a refused send changes nothing");
+            }
+            prop_assert!(conn.buffered_output() as u64 <= budget + 256);
+        }
+    }
+
+    #[test]
+    fn prop_detach_message_matches_event(msgs in prop::collection::vec(msg(), 1..8), cuts in prop::collection::vec(1usize..300, 1..6)) {
+        let mut client = Connection::client_with_seed([9; 32]);
+        let wire = send_all(&mut client, &msgs);
+        let mut server = Connection::server();
+        let mut got = Vec::new();
+        let mut rest = &wire[..];
+        let mut i = 0;
+        while !rest.is_empty() {
+            let take = cuts[i % cuts.len()].min(rest.len());
+            i += 1;
+            let mut chunk = &rest[..take];
+            rest = &rest[take..];
+            while !chunk.is_empty() {
+                let n = server.feed(chunk);
+                chunk = &chunk[n..];
+                loop {
+                    let seen = match server.poll() {
+                        Ok(Event::Text(t)) => Some(t.as_bytes().to_vec()),
+                        Ok(Event::Binary(b)) => Some(b.to_vec()),
+                        Ok(Event::NeedInput) | Ok(Event::Closed) | Err(_) => break,
+                        Ok(_) => None,
+                    };
+                    if let Some(bytes) = seen {
+                        let mut owned = Vec::new();
+                        prop_assert!(server.detach_message(&mut owned).is_some());
+                        prop_assert_eq!(&owned, &bytes);
+                        got.push(owned);
+                    }
+                }
+            }
+        }
+        let want: Vec<Vec<u8>> = expected(&msgs)
+            .into_iter()
+            .filter_map(|e| match e {
+                Ev::Text(t) => Some(t.into_bytes()),
+                Ev::Binary(b) => Some(b),
+                _ => None,
+            })
+            .collect();
+        prop_assert_eq!(got, want);
+    }
+
+    #[test]
+    fn prop_keepalive_deadline_monotone_and_progresses(
+        ping in 1u64..10_000, idle in 1u64..20_000, steps in prop::collection::vec((0u64..5_000, any::<bool>()), 1..40),
+    ) {
+        use core::time::Duration;
+        let k = ws_net::Keepalive::new()
+            .with_ping_interval(Duration::from_millis(ping))
+            .with_idle_timeout(Duration::from_millis(idle));
+        let mut conn = Connection::server().with_keepalive(k);
+        let mut now = 0u64;
+        prop_assert_eq!(conn.on_time(ws_net::Millis(now)), Ok(ws_net::Tick::Nothing));
+        for (advance, input) in steps {
+            if input {
+                let _ = conn.feed(&client_frame(0xA, true, b""));
+                let _ = conn.poll();
+            }
+            now += advance;
+            let deadline = conn.next_deadline();
+            match conn.on_time(ws_net::Millis(now)) {
+                Err(_) => {
+                    prop_assert_eq!(conn.next_deadline(), None);
+                    break;
+                }
+                Ok(_) => {
+                    if let (Some(before), Some(after)) = (deadline, conn.next_deadline()) {
+                        // A tick at or past a deadline moves it on.
+                        if before.as_u64() <= now && !input {
+                            prop_assert!(after > before || after.as_u64() > now);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

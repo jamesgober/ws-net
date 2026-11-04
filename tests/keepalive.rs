@@ -7,7 +7,9 @@ mod common;
 use core::time::Duration;
 
 use common::{client_frame, decode_frames};
-use ws_net::{CloseCode, Connection, Event, Keepalive, Millis, State, Tick, WsError, frame::Opcode};
+use ws_net::{
+    CloseCode, Connection, Event, Keepalive, Millis, State, Tick, WsError, frame::Opcode,
+};
 
 fn secs(s: u64) -> Duration {
     Duration::from_secs(s)
@@ -43,7 +45,10 @@ fn test_keepalive_ping_carries_tick_and_is_sent_once() {
     assert_eq!(conn.on_time(Millis(30_004)), Ok(Tick::Nothing));
     assert_eq!(conn.on_time(Millis(30_005)), Ok(Tick::PingQueued));
     let frames = drain(&mut conn);
-    assert_eq!(frames, [(Opcode::Ping, true, 30_005u64.to_be_bytes().to_vec())]);
+    assert_eq!(
+        frames,
+        [(Opcode::Ping, true, 30_005u64.to_be_bytes().to_vec())]
+    );
     // Outstanding: no second Ping, the next deadline is the idle timeout.
     assert_eq!(conn.on_time(Millis(60_010)), Ok(Tick::Nothing));
     assert_eq!(conn.next_deadline(), Some(Millis(75_005)));
@@ -65,10 +70,14 @@ fn test_keepalive_input_resets_idle_and_ping() {
 
 #[test]
 fn test_keepalive_idle_timeout_queues_close_1001_once() {
-    let mut conn = Connection::server().with_keepalive(Keepalive::new().with_idle_timeout(secs(10)));
+    let mut conn =
+        Connection::server().with_keepalive(Keepalive::new().with_idle_timeout(secs(10)));
     let _ = conn.on_time(Millis(0));
     let e = conn.on_time(Millis(10_000)).unwrap_err();
-    assert_eq!((e, e.close_code()), (WsError::IdleTimeout, Some(CloseCode::GOING_AWAY)));
+    assert_eq!(
+        (e, e.close_code()),
+        (WsError::IdleTimeout, Some(CloseCode::GOING_AWAY))
+    );
     assert_eq!(drain(&mut conn), [(Opcode::Close, true, vec![0x03, 0xE9])]);
     assert_eq!(conn.state(), State::Closed);
     assert_eq!(conn.on_time(Millis(20_000)), Ok(Tick::Nothing));
@@ -107,7 +116,10 @@ fn test_keepalive_slow_message_fails_1008() {
     let _ = conn.feed(&client_frame(0x0, false, b"more"));
     assert!(matches!(conn.poll(), Ok(Event::NeedInput)));
     let e = conn.on_time(Millis(11_000)).unwrap_err();
-    assert_eq!((e, e.close_code()), (WsError::MessageTimeout, Some(CloseCode::POLICY_VIOLATION)));
+    assert_eq!(
+        (e, e.close_code()),
+        (WsError::MessageTimeout, Some(CloseCode::POLICY_VIOLATION))
+    );
     assert_eq!(drain(&mut conn), [(Opcode::Close, true, vec![0x03, 0xF0])]);
 }
 
@@ -131,7 +143,8 @@ fn test_keepalive_completed_message_clears_deadline() {
 
 #[test]
 fn test_keepalive_clock_backwards_and_saturation() {
-    let mut conn = Connection::server().with_keepalive(Keepalive::new().with_idle_timeout(secs(10)));
+    let mut conn =
+        Connection::server().with_keepalive(Keepalive::new().with_idle_timeout(secs(10)));
     let _ = conn.on_time(Millis(50_000));
     // Time going backwards is no time passing.
     assert_eq!(conn.on_time(Millis(0)), Ok(Tick::Nothing));

@@ -144,7 +144,10 @@ fn test_memory_per_connection_matches_formula() {
     assert!(conn.buffered_output() as u64 <= limits.max_output());
     let peak = peak_since(base);
     let bound = 2 * ((1 << 20) + 256) + 64 * 1024;
-    assert!(peak <= bound, "output peak {peak} > {bound} after {sent} sends");
+    assert!(
+        peak <= bound,
+        "output peak {peak} > {bound} after {sent} sends"
+    );
     drop(conn);
 
     // 3. Idle after release_memory: no heap held at all.

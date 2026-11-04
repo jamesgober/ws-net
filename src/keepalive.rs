@@ -45,7 +45,6 @@ impl Millis {
     pub const fn as_u64(self) -> u64 {
         self.0
     }
-
 }
 
 impl Add<Duration> for Millis {

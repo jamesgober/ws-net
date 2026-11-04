@@ -308,7 +308,13 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].1.len(), 2);
         assert_eq!(got[0].1[1].value, Some("10"));
-        assert_eq!(got[1].1[0], Param { name: "server_no_context_takeover", value: None });
+        assert_eq!(
+            got[1].1[0],
+            Param {
+                name: "server_no_context_takeover",
+                value: None
+            }
+        );
         assert_eq!(got[1].1[1].value, Some("12"));
     }
 
@@ -330,7 +336,11 @@ mod tests {
             b"a; b=1 c",
             b"a\x00",
         ] {
-            assert_eq!(offers(bad), Err(HandshakeError::InvalidExtensions), "{bad:?}");
+            assert_eq!(
+                offers(bad),
+                Err(HandshakeError::InvalidExtensions),
+                "{bad:?}"
+            );
         }
     }
 
@@ -354,6 +364,9 @@ mod tests {
         many.extend_from_slice(b"; p");
         assert_eq!(offers(&many), Err(HandshakeError::InvalidExtensions));
         assert_eq!(validate(&sixteen, 16), Ok(16));
-        assert_eq!(validate(&sixteen, 15), Err(HandshakeError::InvalidExtensions));
+        assert_eq!(
+            validate(&sixteen, 15),
+            Err(HandshakeError::InvalidExtensions)
+        );
     }
 }

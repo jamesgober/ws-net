@@ -22,7 +22,10 @@ const REQUEST: &[u8] = b"GET /rpc HTTP/1.1\r\nHost: api.example\r\nUpgrade: webs
 /// (`switching_protocols` writes `upgrade` and `connection` itself).
 fn switching(handshake: &ServerHandshake, protocol: Option<&str>) -> Response {
     let mut response = Response::switching_protocols("websocket");
-    for (name, value) in handshake.response_fields(protocol, &Negotiated::none()).unwrap() {
+    for (name, value) in handshake
+        .response_fields(protocol, &Negotiated::none())
+        .unwrap()
+    {
         if name.starts_with("sec-websocket-") {
             response = response.header(name, value);
         }
@@ -35,7 +38,9 @@ fn test_http_net_sans_io_upgrade_hands_remaining_input_to_connection() {
     let mut http = ServerConn::new();
     let mut wire = REQUEST.to_vec();
     // A masked "Hello" right behind the head.
-    wire.extend_from_slice(&[0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58]);
+    wire.extend_from_slice(&[
+        0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58,
+    ]);
     let taken = http.feed(&wire);
     let policy = AcceptPolicy::new().with_protocols(&["rpc.v1"]).unwrap();
     let (handshake, protocol) = match http.poll().unwrap() {
@@ -49,14 +54,18 @@ fn test_http_net_sans_io_upgrade_hands_remaining_input_to_connection() {
         other => panic!("{other:?}"),
     };
     let mut out = Vec::new();
-    http.respond(&switching(&handshake, protocol.as_deref()), &mut out).unwrap();
+    http.respond(&switching(&handshake, protocol.as_deref()), &mut out)
+        .unwrap();
     let text = String::from_utf8_lossy(&out);
     assert!(text.starts_with("HTTP/1.1 101 "), "{text}");
     assert!(text.contains("sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"));
     assert!(text.contains("sec-websocket-protocol: rpc.v1\r\n"));
     // The response verifies on a ws-net client with the same nonce.
     let client = ClientHandshake::with_nonce(*b"the sample nonce").with_protocols(&["rpc.v1"]);
-    assert_eq!(client.verify_head(&out).unwrap().map(|v| v.0), Some(Some("rpc.v1")));
+    assert_eq!(
+        client.verify_head(&out).unwrap().map(|v| v.0),
+        Some(Some("rpc.v1"))
+    );
 
     loop {
         match http.poll().unwrap() {
@@ -91,7 +100,8 @@ fn test_http_net_sans_io_policy_refusal_is_an_ordinary_response() {
     };
     assert_eq!(refusal, HandshakeError::OriginRefused);
     let mut out = Vec::new();
-    http.respond(&Response::new(refusal.status()), &mut out).unwrap();
+    http.respond(&Response::new(refusal.status()), &mut out)
+        .unwrap();
     assert!(out.starts_with(b"HTTP/1.1 403 "));
 }
 
@@ -110,7 +120,8 @@ impl ReplaceOrigin for [u8] {
 #[test]
 fn test_http_net_blocking_on_upgrade_continues_with_from_upgraded() {
     let server = Server::bind("127.0.0.1:0").unwrap().on_upgrade(|up| {
-        let mut ws = blocking::WebSocket::from_upgraded(up.stream, &up.leftover, Connection::server());
+        let mut ws =
+            blocking::WebSocket::from_upgraded(up.stream, &up.leftover, Connection::server());
         while let Ok(message) = ws.read() {
             if message.is_data() {
                 let _ = ws.send(&message);
@@ -122,11 +133,12 @@ fn test_http_net_blocking_on_upgrade_continues_with_from_upgraded() {
     let handle = thread::spawn(move || {
         server.serve(|req, _body| {
             let policy = AcceptPolicy::new().with_origins(OriginPolicy::any_origin());
-            let decided = ServerHandshake::from_request(req.method_str(), req.target(), req.headers())
-                .and_then(|hs| {
-                    let protocol = policy.check(&hs)?.protocol.map(String::from);
-                    Ok((protocol, hs))
-                });
+            let decided =
+                ServerHandshake::from_request(req.method_str(), req.target(), req.headers())
+                    .and_then(|hs| {
+                        let protocol = policy.check(&hs)?.protocol.map(String::from);
+                        Ok((protocol, hs))
+                    });
             match decided {
                 Ok((protocol, hs)) => switching(&hs, protocol.as_deref()),
                 Err(e) => Response::new(e.status()),

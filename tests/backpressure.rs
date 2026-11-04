@@ -37,7 +37,8 @@ fn test_output_budget_close_and_pong_use_headroom() {
     assert!(matches!(conn.poll(), Ok(Event::Ping(_))));
     assert_eq!(conn.buffered_output(), 1000 + 127);
     // A Close with the longest reason still fits.
-    conn.close(CloseCode::TRY_AGAIN_LATER, &"r".repeat(123)).unwrap();
+    conn.close(CloseCode::TRY_AGAIN_LATER, &"r".repeat(123))
+        .unwrap();
     assert_eq!(conn.buffered_output(), 1000 + 127 + 127);
     let frames = decode_frames(conn.output());
     assert_eq!(frames.len(), 3);
@@ -65,7 +66,10 @@ fn test_output_budget_ping_flood_unread_stays_bounded() {
     // One Pong, the latest, after the data.
     let frames = decode_frames(conn.output());
     assert_eq!(frames.len(), 2);
-    assert_eq!(frames[1], (Opcode::Pong, true, 9_999u32.to_be_bytes().to_vec()));
+    assert_eq!(
+        frames[1],
+        (Opcode::Pong, true, 9_999u32.to_be_bytes().to_vec())
+    );
     assert!(conn.buffered_output() <= 1000 + 256);
 }
 
@@ -77,7 +81,10 @@ fn test_output_budget_drain_then_send_again() {
     conn.advance_output(500);
     conn.send_text("x").unwrap();
     // Fragments are refused whole too.
-    assert_eq!(conn.send_binary_fragment(&[0; 600], false), Err(WsError::OutputFull));
+    assert_eq!(
+        conn.send_binary_fragment(&[0; 600], false),
+        Err(WsError::OutputFull)
+    );
     assert!(conn.can_send());
 }
 
@@ -97,7 +104,10 @@ fn test_poll_split_reply_while_holding_message() {
         Event::Text(text) => sender.send_text(text).unwrap(),
         other => panic!("{other:?}"),
     }
-    assert_eq!(decode_frames(conn.output()), [(Opcode::Text, true, b"ping me".to_vec())]);
+    assert_eq!(
+        decode_frames(conn.output()),
+        [(Opcode::Text, true, b"ping me".to_vec())]
+    );
 }
 
 #[test]
@@ -163,10 +173,16 @@ fn test_prepared_message_broadcast_and_refusals() {
     let (events, _) = drive(&mut client, &[a.output()], false);
     assert_eq!(events, [common::Ev::Text("x".repeat(300))]);
     // Refused for a client, during fragments, past the budget.
-    assert!(matches!(client.send_prepared(&msg), Err(WsError::InvalidState(_))));
+    assert!(matches!(
+        client.send_prepared(&msg),
+        Err(WsError::InvalidState(_))
+    ));
     let mut c = Connection::server();
     c.send_text_fragment("a", false).unwrap();
-    assert!(matches!(c.send_prepared(&msg), Err(WsError::InvalidState(_))));
+    assert!(matches!(
+        c.send_prepared(&msg),
+        Err(WsError::InvalidState(_))
+    ));
     let mut d = budgeted(100);
     assert_eq!(d.send_prepared(&msg), Err(WsError::OutputFull));
     assert_eq!(a.stats().messages_out, 1);
@@ -184,9 +200,24 @@ fn test_send_owned_messages_and_to_message() {
     ] {
         conn.send(&m).unwrap();
     }
-    let ops: Vec<_> = decode_frames(conn.output()).into_iter().map(|f| f.0).collect();
-    assert_eq!(ops, [Opcode::Text, Opcode::Binary, Opcode::Ping, Opcode::Pong, Opcode::Close]);
-    assert!(matches!(conn.send(&Message::Close(None)), Err(WsError::InvalidState(_))));
+    let ops: Vec<_> = decode_frames(conn.output())
+        .into_iter()
+        .map(|f| f.0)
+        .collect();
+    assert_eq!(
+        ops,
+        [
+            Opcode::Text,
+            Opcode::Binary,
+            Opcode::Ping,
+            Opcode::Pong,
+            Opcode::Close
+        ]
+    );
+    assert!(matches!(
+        conn.send(&Message::Close(None)),
+        Err(WsError::InvalidState(_))
+    ));
 
     let mut server = Connection::server();
     let _ = server.feed(&client_frame(0x8, true, &[0x03, 0xE8, b'o', b'k']));
@@ -212,7 +243,10 @@ fn test_stats_count_both_directions() {
     conn.advance_output(n);
     let s = conn.stats();
     assert_eq!(s.bytes_in, wire.len() as u64);
-    assert_eq!((s.frames_in, s.messages_in, s.pings_in, s.pongs_in), (5, 2, 1, 1));
+    assert_eq!(
+        (s.frames_in, s.messages_in, s.pings_in, s.pongs_in),
+        (5, 2, 1, 1)
+    );
     assert_eq!(s.messages_out, 1);
     assert_eq!(s.bytes_out, (out.len() + n) as u64);
 }
@@ -265,13 +299,20 @@ fn test_retain_shrinks_buffers_after_burst() {
     conn.send_binary(&[0; 100_000]).unwrap();
     let n = conn.output().len();
     conn.advance_output(n);
-    assert!(conn.memory_in_use() <= 64 * 1024, "output shrunk after drain");
+    assert!(
+        conn.memory_in_use() <= 64 * 1024,
+        "output shrunk after drain"
+    );
     let mut wire = client_frame(0x2, false, &[1; 50_000]);
     wire.extend_from_slice(&client_frame(0x0, true, &[1; 50_000]));
     let (events, _) = drive(&mut conn, &wire.chunks(4096).collect::<Vec<_>>(), false);
     assert_eq!(events.len(), 1);
     let _ = conn.poll();
-    assert!(conn.memory_in_use() <= 2 * 64 * 1024, "{}", conn.memory_in_use());
+    assert!(
+        conn.memory_in_use() <= 2 * 64 * 1024,
+        "{}",
+        conn.memory_in_use()
+    );
 }
 
 #[test]

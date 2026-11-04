@@ -96,6 +96,24 @@ required-features = ["std"]
 [[example]]
 name              = "accept_policy"
 
+[[example]]
+name              = "keepalive"
+
+[[example]]
+name              = "broadcast"
+
+[[example]]
+name              = "blocking_echo"
+required-features = ["std"]
+
+[[example]]
+name              = "blocking_client"
+required-features = ["std"]
+
+[[example]]
+name              = "http_net_upgrade"
+required-features = ["std"]
+
 
 # RELEASE PROFILE
 # #################################

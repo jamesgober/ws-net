@@ -390,7 +390,9 @@ impl Writer {
                 ));
             }
         } else if !reason.is_empty() {
-            return Err(WsError::InvalidArgument("a close reason needs a status code"));
+            return Err(WsError::InvalidArgument(
+                "a close reason needs a status code",
+            ));
         }
         if reason.len() > 123 {
             return Err(WsError::InvalidArgument("close reason over 123 bytes"));
@@ -960,7 +962,11 @@ fn grow(msg: &mut Vec<u8>, need: usize, max_message: u64) {
     }
     let budget = usize::try_from(max_message).unwrap_or(usize::MAX);
     let wanted = len.saturating_add(need);
-    let target = msg.capacity().saturating_mul(2).max(wanted).min(budget.max(wanted));
+    let target = msg
+        .capacity()
+        .saturating_mul(2)
+        .max(wanted)
+        .min(budget.max(wanted));
     msg.reserve_exact(target - len);
 }
 
@@ -1192,7 +1198,8 @@ impl Connection {
     /// assert_eq!(conn.output(), [0x81, 0x02, b'h', b'i']);
     /// ```
     pub fn send_text(&mut self, text: &str) -> Result<(), WsError> {
-        self.writer.send_message(&self.limits, Kind::Text, text.as_bytes())
+        self.writer
+            .send_message(&self.limits, Kind::Text, text.as_bytes())
     }
 
     /// Sends a binary message (split like [`send_text`](Self::send_text)).
@@ -1251,7 +1258,8 @@ impl Connection {
     /// assert_eq!(conn.output(), [0x02, 0x01, 1, 0x89, 0x00, 0x80, 0x01, 2]);
     /// ```
     pub fn send_binary_fragment(&mut self, data: &[u8], fin: bool) -> Result<(), WsError> {
-        self.writer.send_fragment(&self.limits, Kind::Binary, data, fin)
+        self.writer
+            .send_fragment(&self.limits, Kind::Binary, data, fin)
     }
 
     /// Sends a Ping (payload at most 125 bytes).
@@ -1458,7 +1466,9 @@ impl Connection {
         if clock.ping_sent == UNSET
             && !writer.sent_close
             && is_due(clock.last_rx, clock.ping)
-            && writer.send_control(Opcode::Ping, &now.to_be_bytes()).is_ok()
+            && writer
+                .send_control(Opcode::Ping, &now.to_be_bytes())
+                .is_ok()
         {
             clock.ping_sent = now;
             return Ok(Tick::PingQueued);
@@ -1487,7 +1497,11 @@ impl Connection {
         };
         let idle = due(c.last_rx, c.idle);
         let close = if self.writer.sent_close {
-            let since = if c.close_sent == UNSET { c.now } else { c.close_sent };
+            let since = if c.close_sent == UNSET {
+                c.now
+            } else {
+                c.close_sent
+            };
             due(since, c.close)
         } else {
             None
@@ -1498,7 +1512,11 @@ impl Connection {
         } else {
             None
         };
-        [ping, idle, close, message].into_iter().flatten().min().map(Millis)
+        [ping, idle, close, message]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(Millis)
     }
 
     /// Whether the transport should be closed now: the connection is
@@ -1783,7 +1801,8 @@ impl Sender<'_> {
     ///
     /// See [`Connection::poll_split`].
     pub fn send_text(&mut self, text: &str) -> Result<(), WsError> {
-        self.writer.send_message(self.limits, Kind::Text, text.as_bytes())
+        self.writer
+            .send_message(self.limits, Kind::Text, text.as_bytes())
     }
 
     /// As [`Connection::send_binary`].

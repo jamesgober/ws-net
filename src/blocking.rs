@@ -253,7 +253,10 @@ pub fn connect_with<S: Read + Write>(
             let protocol = verified.protocol.map(String::from);
             let connection = Connection::try_client()?;
             let leftover = buf.get(len..).unwrap_or(&[]);
-            return Ok((WebSocket::from_upgraded(stream, leftover, connection), protocol));
+            return Ok((
+                WebSocket::from_upgraded(stream, leftover, connection),
+                protocol,
+            ));
         }
     }
 }
@@ -341,7 +344,9 @@ impl<S: Read + Write> WebSocket<S> {
     pub fn read(&mut self) -> Result<Message, Error> {
         loop {
             if self.taken < self.pending.len() {
-                let n = self.connection.feed(self.pending.get(self.taken..).unwrap_or(&[]));
+                let n = self
+                    .connection
+                    .feed(self.pending.get(self.taken..).unwrap_or(&[]));
                 self.taken += n;
                 if self.taken == self.pending.len() {
                     self.pending = Vec::new();
@@ -374,7 +379,10 @@ impl<S: Read + Write> WebSocket<S> {
                 Ok(n) => self.connection.commit(n),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e)
-                    if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {}
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
                 Err(e) => return Err(Error::Io(e)),
             }
             self.tick()?;

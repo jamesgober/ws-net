@@ -901,11 +901,26 @@ mod tests {
             .with_origins(OriginPolicy::any_origin())
             .with_hosts(&["chat.example", "[::1]:8080", "10.0.0.1:9000"])
             .unwrap();
-        for ok in ["chat.example", "CHAT.EXAMPLE", "[0::1]:8080", "10.0.0.1:9000"] {
+        for ok in [
+            "chat.example",
+            "CHAT.EXAMPLE",
+            "[0::1]:8080",
+            "10.0.0.1:9000",
+        ] {
             assert!(p.check(&handshake(ok, None)).is_ok(), "{ok}");
         }
-        for bad in ["attacker.example", "chat.example:8080", "[::1]", "10.0.0.1", "chat.example.evil"] {
-            assert_eq!(p.check(&handshake(bad, None)), Err(HandshakeError::HostRefused), "{bad}");
+        for bad in [
+            "attacker.example",
+            "chat.example:8080",
+            "[::1]",
+            "10.0.0.1",
+            "chat.example.evil",
+        ] {
+            assert_eq!(
+                p.check(&handshake(bad, None)),
+                Err(HandshakeError::HostRefused),
+                "{bad}"
+            );
         }
         assert_eq!(HandshakeError::HostRefused.status(), 403);
         // With the endpoint's scheme known, a port-less entry means its default.
@@ -919,13 +934,19 @@ mod tests {
     #[test]
     fn test_secure_same_origin_pins_scheme() {
         let wss = AcceptPolicy::new().with_secure(true);
-        assert!(wss.check(&handshake("a.example", Some("https://a.example"))).is_ok());
+        assert!(
+            wss.check(&handshake("a.example", Some("https://a.example")))
+                .is_ok()
+        );
         assert_eq!(
             wss.check(&handshake("a.example", Some("http://a.example"))),
             Err(HandshakeError::OriginRefused)
         );
         let ws = AcceptPolicy::new().with_secure(false);
-        assert!(ws.check(&handshake("a.example", Some("http://a.example"))).is_ok());
+        assert!(
+            ws.check(&handshake("a.example", Some("http://a.example")))
+                .is_ok()
+        );
         // Missing Origin is still governed by allow_missing.
         assert!(wss.check(&handshake("a.example", None)).is_ok());
     }
@@ -940,7 +961,10 @@ mod tests {
         assert!(out.starts_with(b"HTTP/1.1 499 Client Error\r\n"));
         for bad in [0, 101, 399, 600] {
             let mut out = Vec::new();
-            assert_eq!(write_refusal(bad, None, &mut out), Err(HandshakeError::InvalidRequest));
+            assert_eq!(
+                write_refusal(bad, None, &mut out),
+                Err(HandshakeError::InvalidRequest)
+            );
             assert!(out.is_empty());
         }
     }

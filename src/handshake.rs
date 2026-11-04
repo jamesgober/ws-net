@@ -161,9 +161,16 @@ pub struct ServerHandshake {
 /// not add it: `host`, `upgrade`, `connection`, any `sec-websocket-*`, and
 /// the body framing fields.
 fn reserved(name: &str) -> bool {
-    ["host", "upgrade", "connection", "content-length", "transfer-encoding", "origin"]
-        .iter()
-        .any(|r| name.eq_ignore_ascii_case(r))
+    [
+        "host",
+        "upgrade",
+        "connection",
+        "content-length",
+        "transfer-encoding",
+        "origin",
+    ]
+    .iter()
+    .any(|r| name.eq_ignore_ascii_case(r))
         || name
             .get(..14)
             .is_some_and(|p| p.eq_ignore_ascii_case("sec-websocket-"))
@@ -308,7 +315,11 @@ impl ServerHandshake {
                 origin = value;
             } else if name.eq_ignore_ascii_case("sec-websocket-extensions") {
                 offers += extension::validate(value, extension::MAX_OFFERS - offers)?;
-                if offers > 0 && !value.iter().all(|b| *b == b' ' || *b == b'\t' || *b == b',') {
+                if offers > 0
+                    && !value
+                        .iter()
+                        .all(|b| *b == b' ' || *b == b'\t' || *b == b',')
+                {
                     if !extensions.is_empty() {
                         extensions.push_str(", ");
                     }
@@ -968,7 +979,11 @@ impl ClientHandshake {
     /// assert!(verified.extensions.is_empty());
     /// # Ok::<(), ws_net::HandshakeError>(())
     /// ```
-    pub fn verify_full<'h, I>(&self, status: u16, headers: I) -> Result<Verified<'_>, HandshakeError>
+    pub fn verify_full<'h, I>(
+        &self,
+        status: u16,
+        headers: I,
+    ) -> Result<Verified<'_>, HandshakeError>
     where
         I: IntoIterator<Item = (&'h str, &'h [u8])>,
     {

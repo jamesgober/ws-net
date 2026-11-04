@@ -13,6 +13,78 @@
 
 ---
 
+## [0.4.0] - 2026-11-04
+
+Extended: everything a server with many connections needs around the
+protocol. Output budget, memory release, keepalive and timeouts on the
+caller's clock, split borrows and detaching messages, counters and wiping,
+owned and prepared messages, extension parsing, Host allowlists, the
+blocking adapter, and the http-net integration.
+
+### Added
+
+- `Limits::with_max_output` (32 MiB default) and `WsError::OutputFull`: a
+  send that would exceed the pending-output budget is refused and changes
+  nothing; automatic Pong and Close frames use a 256-byte headroom.
+  `Limits::with_input_buffer` (256 B to 1 MiB), `with_retain` (64 KiB), and
+  `DEFAULT_*` constants. `Connection::buffered_output`.
+- `Keepalive` (ping interval, idle, close, and message timeouts), `Millis`,
+  `Tick`; `Connection::with_keepalive`, `on_time`, `next_deadline`,
+  `should_close_transport`; `WsError::IdleTimeout` (1001),
+  `CloseTimeout` (1006, not sent), `MessageTimeout` (1008).
+- `Connection::poll_split` and `Sender`; `detach_message` and
+  `MessageKind`; `stats` and `Stats`; `wipe`; `release_memory`,
+  `memory_in_use`.
+- `Message`, `Event::to_message`, `Connection::send`; `PreparedMessage`
+  and `send_prepared`.
+- The `extension` module (`parse`, `Offers`, `Offer`, `Param`,
+  `Negotiated`, `MAX_OFFERS`, `MAX_PARAMS`); `ServerHandshake::extensions`,
+  `MAX_EXTENSION_OFFERS`; `HandshakeError::InvalidExtensions`;
+  `ClientHandshake::verify_full`; `Verified::extensions` and
+  `Decision::extensions`.
+- `AcceptPolicy::with_hosts` and `HandshakeError::HostRefused` (403, DNS
+  rebinding), `with_secure`, `with_keepalive`; `write_refusal` (403, 429,
+  503 with `retry-after`).
+- `ServerHandshake::write_response_with` (extra response headers),
+  `response_fields` and `ResponseFields` (the `101` field list for an HTTP
+  layer); `ClientHandshake::with_header`.
+- `FrameHeader::encode_to_slice`; `CloseCode::is_private_use`,
+  `is_registered`, `is_reporting_only`.
+- The `blocking` module (feature `std`): `accept`, `accept_with`,
+  `connect`, `connect_with`, `WebSocket` (`from_upgraded`, `read`,
+  `send_text`, `send_binary`, `send`, `ping`, `close`, `flush`, accessors),
+  `Error`.
+- `docs/INTEGRATION.md`; examples `keepalive`, `broadcast`,
+  `blocking_echo`, `blocking_client`, `http_net_upgrade`.
+- Tests: keepalive, output budget and headroom, detach, prepared messages,
+  counters, wiping, memory per connection with a counting allocator,
+  the blocking adapter over localhost, http-net's sans-IO and blocking
+  upgrade (http-net is a dev-dependency only), extension and extra-header
+  edge cases; properties for the output bound, detach, and keepalive
+  deadlines. Benches `handshake/head_reader_bytewise`,
+  `broadcast/prepared_10k`, `keepalive/on_time_idle`,
+  `flood/empty_continuations`.
+
+### Changed
+
+- `Limits` moved to its own module (still `ws_net::Limits`).
+- The automatic Pong is encoded into the output when the Ping is read, not
+  on the next `output()` call, with the same rule: an unwritten Pong at the
+  end of the queue is replaced by the next. Bytes on the wire are the same.
+- A reassembly buffer is shrunk after delivery when it grew past `retain`
+  (64 KiB; it was 1 MiB), and never grows past the message budget.
+- The output buffer is released when drained and larger than `retain`.
+
+### Security
+
+- Slow consumers: the output budget bounds what a peer that stops reading
+  can make this end hold.
+- Slow messages and idle connections: the message and idle timeouts end
+  them; a peer that never answers a Close is cut off by the close timeout.
+- DNS rebinding: `AcceptPolicy::with_hosts`.
+
+---
+
 ## [0.3.0] - 2026-11-04
 
 Design lock and core corrections: a one-call server accept with the
@@ -185,7 +257,8 @@ Initial scaffold and repository bootstrap. No domain logic yet: this release est
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jamesgober/ws-net/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamesgober/ws-net/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamesgober/ws-net/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/ws-net/releases/tag/v0.1.0

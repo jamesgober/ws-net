@@ -24,25 +24,25 @@ Status: **S** shipped (version), **P** planned (version). The full API, item by 
 | FR-3 | Refuse `Transfer-Encoding` and `Content-Length` other than `0` on the upgrade (`UnexpectedBody`). | S 0.3 |
 | FR-4 | Expose target, Host, Origin, offered subprotocols; offered extensions. | S 0.2; extensions P 0.4 |
 | FR-5 | Origin policy: exact allowlist after normalisation, same-origin default, `any_origin` opt-out, `null` never matches; refusal 403. | S 0.3 |
-| FR-6 | Host allowlist with RFC 3986 authority syntax (DNS rebinding). | P 0.4 |
+| FR-6 | Host allowlist with RFC 3986 authority syntax (DNS rebinding). | S 0.4 |
 | FR-7 | Subprotocol selection by server preference; `require_protocol`. | S 0.3 |
-| FR-8 | Extension negotiation (`Sec-WebSocket-Extensions` grammar, at most 16 offers of 16 parameters). | P 0.4 (see D-017) |
-| FR-9 | Refusals 400, 403, 426, 431; 503 with `retry-after` through `write_refusal`. | S 0.2/0.3; 503 helper P 0.4 |
-| FR-10 | The 101 as a field list for HTTP layers; extra response headers. | P 0.4 |
+| FR-8 | Extension negotiation (`Sec-WebSocket-Extensions` grammar, at most 16 offers of 16 parameters). | S 0.4 (parsing; every offer declined until deflate, D-020) |
+| FR-9 | Refusals 400, 403, 426, 431; 503 with `retry-after` through `write_refusal`. | S 0.2 to 0.4 |
+| FR-10 | The 101 as a field list for HTTP layers; extra response headers. | S 0.4 |
 | FR-11 | At most one allocation per handshake. | P 0.6 |
-| FR-12 | Client request, with extra headers and extension offers. | S 0.2; extras P 0.4/0.5 |
+| FR-12 | Client request, with extra headers and extension offers. | S 0.2; headers S 0.4; offers P 0.5 |
 | FR-13 | Client response verification, extensions included. | S 0.2; extensions P 0.4/0.5 |
 | FR-14 to FR-26 | Every frame rule, masking direction, RSV, opcodes, control frames, fragmentation, incremental UTF-8, close rules, closing handshake, automatic Pong (latest replaces unwritten), EOF, budgets from headers, 1 MiB reservation cap. | S 0.2 |
 | FR-27 | Outgoing frame size separate from the incoming budget (`Limits::with_send_frame`). | S 0.3 |
 | FR-28 | Sending fragmented messages. | S 0.2 |
-| FR-29 to FR-32 | Output budget with 256 B control headroom; `buffered_output`; `release_memory` and retain threshold; configurable input buffer. | P 0.4 |
-| FR-33 to FR-37 | Keepalive and timeouts driven by the caller's monotonic milliseconds; `next_deadline`. | P 0.4 |
-| FR-38, FR-39 | `PreparedMessage`, `send_prepared` (server only). | P 0.4 |
+| FR-29 to FR-32 | Output budget with 256 B control headroom; `buffered_output`; `release_memory` and retain threshold; configurable input buffer. | S 0.4 |
+| FR-33 to FR-37 | Keepalive and timeouts driven by the caller's monotonic milliseconds; `next_deadline`. | S 0.4 |
+| FR-38, FR-39 | `PreparedMessage`, `send_prepared` (server only). | S 0.4 |
 | FR-40 to FR-44 | permessage-deflate. | P 0.5 (D-015) |
-| FR-45 | http-net integration test. | P 0.4 |
+| FR-45 | http-net integration test. | S 0.4 |
 | FR-46 | tls-net example. | P 0.7 |
-| FR-47, FR-48 | Blocking adapter; owned `Message`. | P 0.4 |
-| FR-49 to FR-52 | Split borrow; detach; counters; wipe. | P 0.4 |
+| FR-47, FR-48 | Blocking adapter; owned `Message`. | S 0.4 |
+| FR-49 to FR-52 | Split borrow; detach; counters; wipe. | S 0.4 |
 | FR-53 | Bounded work per `poll`. | S 0.2, tested 0.3 |
 | FR-54, FR-55 | RFC 8441; state export. | P 1.x |
 | FR-56 | `no_std` + `alloc` core. | S 0.2 |
@@ -105,4 +105,11 @@ Defence idea per version (hypothesis, method, cost):
 | D-014 | 2026-11-04 | `REPS.md` keeps its em dashes. | It must stay a byte-identical copy of the shared REPS file; the no-em-dash rule applies to the crate's own documents. |
 | D-015 | 2026-11-04 | permessage-deflate needs a first-party raw DEFLATE crate (sans-IO, no dependencies, no `unsafe`). If none is published when 0.5 is otherwise done, deflate moves to 0.6, then at the latest out of 1.0 to 1.1, each move recorded in `dev/ROADMAP.md`. | Zero third-party dependencies; DEFLATE also serves HTTP content coding, so it belongs in its own crate. None exists on 2026-11-04. |
 | D-016 | 2026-11-04 | `tests/autobahn.rs` runs every case in pieces of every size from 1 to 15 bytes and split in two at every point (for the 64 KiB cases, every point near a header or buffer boundary and a stride). | Determinism for every split (NFR-12) at the boundaries where streaming parsers break. |
+| D-018 | 2026-11-04 | The automatic Pong is encoded into the output when its Ping is read, keeping the replace-the-unwritten-one rule, instead of waiting inline until the next `output()` or send. | It removes a 127-byte inline buffer (keeping `size_of::<Connection>()` under 512 bytes with the 0.4 state) and makes "the Pong is already queued" literally true; the wire bytes are unchanged (every 0.2 test passes as is). |
+| D-019 | 2026-11-04 | The memory formula is stated as measured: input buffer + reassembly (never above `max_message`, plus up to 1 MiB reserved ahead) + output (up to twice `max_output` + 256 by vector growth, plus 64 KiB written prefix before compaction). Reassembly growth is capped at the message budget. | The plan's formula ignored vector doubling and the compaction slack; the counting-allocator test checks the real bound. |
+| D-020 | 2026-11-04 | `Sec-WebSocket-Extensions` is parsed in ws-net on parse-net's list, token, and quoted-string primitives (the fallback of D-017), with absent values allowed and quoted values with escapes refused. Every offer is declined until permessage-deflate lands; a client refuses any extension it did not offer. | parse-net 0.9 has no optional-value parameter form; the gap is reported. Declining is always allowed by RFC 6455. |
+| D-021 | 2026-11-04 | Extra headers (client `with_header`, server `write_response_with`) refuse the names the handshake writes (`host`, `upgrade`, `connection`, `origin`, `sec-websocket-*`, `content-length`, `transfer-encoding`), non-token names, control bytes, and surrounding whitespace. | A caller must not be able to forge or duplicate a handshake field, or declare a body ws-net refuses. |
+| D-022 | 2026-11-04 | `OutputFull` applies to data, Pings, unsolicited Pongs, and prepared messages; automatic Pongs and every Close use the headroom; an automatic Pong that does not fit is dropped (a later Ping is answered). | The protocol must always be able to answer and close; nothing the caller sends may exceed the budget. |
+| D-023 | 2026-11-04 | `AcceptPolicy::check` tests the Host allowlist before the Origin. A port-less Host entry matches the endpoint's default port only when `with_secure` says which it is; otherwise only a port-less request. | A rebinding attack shows in Host first; never guess a default port. |
+| D-024 | 2026-11-04 | 0.4.0 ships without a conclusive benchmark comparison against 0.2.0. The runs on 2026-11-04 were on a shared machine with a load average near 40 on 32 cores: an unchanged 0.2.0 benchmark moved by up to 350% between back-to-back runs, and the 1 MiB receive rows that first looked 5 times slower measured within 5% on a rerun. The 0.4 additions on the per-message path (an output-budget check per send, counters, the lent-message marker) are re-measured on a quiet machine as a 0.6 exit item, and any row more than 5% behind 0.2.0 is fixed there. | The regression gate needs numbers that mean something; recorded rather than skipped. |
 | D-017 | 2026-11-04 | API gap reported to parse-net: RFC 6455 extension parameters may have no value (`client_max_window_bits`, `server_no_context_takeover`), and `parse_net::param::parse` refuses a name with no `=`. The 0.4 extension parser waits for an optional-value form in parse-net; if parse-net 1.0 does not add one, ws-net parses parameters itself on top of `parse_net::text` (token and quoted-string), recorded here. | The adoption rule moves shared grammar out of ws-net; this piece is not yet expressible with parse-net. |

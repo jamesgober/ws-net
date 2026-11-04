@@ -44,7 +44,9 @@ A handful of types, one per job:
 - **[`accept`](./docs/API.md#tier-1-accept-and-acceptor)** takes a socket's first bytes and returns the `101` response and a fed `Connection`, with the same-origin policy applied. An **[`Acceptor`](./docs/API.md#tier-1-accept-and-acceptor)** does the same over a head read in pieces, scanning each byte once, and takes an **[`AcceptPolicy`](./docs/API.md#acceptpolicy-and-decision)** (which pages may connect through an **[`OriginPolicy`](./docs/API.md#originpolicy)**, which subprotocol, which limits).
 - A **[`ServerHandshake`](./docs/API.md#serverhandshake)** is a validated upgrade request, from raw bytes or from an HTTP layer's parsed fields; it writes the `101` response. A **[`ClientHandshake`](./docs/API.md#clienthandshake)** writes the request and checks the response. A **[`HeadReader`](./docs/API.md#headreader)** reads either head from a socket in pieces with linear total work.
 - A **[`WsError`](./docs/API.md#wserror)** is a connection failure, with the close code that was sent, or a refused call that changed nothing. A **[`HandshakeError`](./docs/API.md#handshakeerror)** says why a handshake was refused and writes the refusal.
-- The **[`frame`](./docs/API.md#the-frame-module)** module is the raw header codec and the masking function, for callers that build or inspect frames.
+- **[`Keepalive`](./docs/API.md#keepalive-millis-tick)** pings and times out on the caller's clock: `on_time(now)` and `next_deadline()`, so an idle connection costs no CPU. **[`PreparedMessage`](./docs/API.md#preparedmessage)** encodes a broadcast once. **[`Stats`](./docs/API.md#stats)**, `wipe`, and `release_memory` serve servers with many connections.
+- The **[`blocking`](./docs/API.md#the-blocking-module)** module drives a connection over any `Read + Write` stream: `accept`, `connect`, `read`, `send`.
+- The **[`frame`](./docs/API.md#the-frame-module)** module is the raw header codec and the masking function, for callers that build or inspect frames; the **[`extension`](./docs/API.md#the-extension-module)** module reads `Sec-WebSocket-Extensions`.
 
 <br>
 
@@ -55,6 +57,8 @@ What it guarantees, and how each guarantee is checked:
 | Frames follow RFC 6455 exactly; every violation fails the connection with the right close code. | 111 Autobahn-style cases written as data (framing, ping/pong, reserved bits and opcodes, fragmentation, UTF-8, close codes, limits, masking direction, length encoding), each run whole, in pieces of every size from 1 to 15 bytes, and split in two at every point, with identical results. |
 | Text is validated as UTF-8 incrementally, across fragment boundaries, and fails at the first bad byte (1007). | A property test accepts a text message exactly when `std::str::from_utf8` accepts its bytes, however it is fragmented and split. |
 | Messages survive any fragmentation and any split of the wire bytes, with control frames interleaved. | Round-trip properties client to server and server to client, against the messages sent. |
+| A slow reader cannot grow this end's memory either. | The output budget refuses a send that would exceed it and changes nothing; Pong and Close still fit in a 256-byte headroom; a property checks the bound under random sends, drains, and Pings. |
+| Memory per connection is bounded and measured. | A counting allocator checks the peak of each scenario against the formula, zero heap for an idle connection after `release_memory`, and zero allocations per message in steady state. |
 | Hostile input cannot grow memory past the budgets, and never panics. | Budgets are checked from headers (a property compares the verdict with a direct computation); fuzz properties feed arbitrary bytes and frame-shaped noise with the budgets small, default, and lifted to `u64::MAX`; a peer that pings without reading leaves at most one Pong queued. |
 | Every frame shape round-trips through the codec, and masking is its own inverse. | Properties over every opcode, length class, and mask, and over any masking offset, against a byte-by-byte reference. |
 | The handshake is RFC 6455's, and refuses what it should. | RFC 6455's own example request and accept key, strict-head tests (bare CR/LF, folding, duplicate `Host`/`Origin`, wrong version, malformed keys, a declared body), and a client-server round trip for arbitrary nonces. |
@@ -69,14 +73,14 @@ What it guarantees, and how each guarantee is checked:
 
 ```toml
 [dependencies]
-ws-net = "0.3"
+ws-net = "0.4"
 ```
 
 Without the standard library:
 
 ```toml
 [dependencies]
-ws-net = { version = "0.3", default-features = false }
+ws-net = { version = "0.4", default-features = false }
 ```
 
 <hr>
@@ -187,6 +191,10 @@ Runnable programs in [`examples/`](./examples):
 |---|---|
 | [`sans_io`](./examples/sans_io.rs) | A client and a server talking through memory: the handshake as raw bytes, messages, a ping, a refused call, and the closing handshake. The loop every transport adapter wraps. `cargo run --example sans_io` |
 | [`echo_server`](./examples/echo_server.rs) | A localhost echo server over `std::net`, one thread per connection, with no HTTP library: the handshake through an `Acceptor` (same-origin policy, linear head scanning), refusals answered, protocol failures closed with their code. `cargo run --example echo_server -- 127.0.0.1:9001` |
+| [`blocking_echo`](./examples/blocking_echo.rs), [`blocking_client`](./examples/blocking_client.rs) | The blocking adapter on both ends: same-origin policy, keepalive pings, the closing handshake. `cargo run --example blocking_echo -- 127.0.0.1:9001` |
+| [`http_net_upgrade`](./examples/http_net_upgrade.rs) | A WebSocket route behind http-net's blocking server: ws-net validates and decides, http-net writes the `101`, `on_upgrade` hands the socket to the adapter. `cargo run --example http_net_upgrade` |
+| [`keepalive`](./examples/keepalive.rs) | Pings, an idle timeout, and the slow-message timeout on a simulated clock. `cargo run --example keepalive` |
+| [`broadcast`](./examples/broadcast.rs) | One `PreparedMessage` to 10,000 connections, with a slow subscriber refused by its output budget. `cargo run --release --example broadcast` |
 | [`accept_policy`](./examples/accept_policy.rs) | An `AcceptPolicy` deciding three requests: the application's own page (101 with the server's preferred subprotocol), another site's page (403), and a client with no shared subprotocol (400). `cargo run --example accept_policy` |
 
 <hr>
@@ -220,7 +228,7 @@ cargo bench --bench bench
 
 ## Design notes
 
-- **Sans-IO.** The engine never touches a socket, a clock, or a thread. That makes it testable byte by byte, usable from any runtime, and leaves timeouts and keep-alive pings (Studio sends one every 30 s) to the caller, who owns the clock.
+- **Sans-IO.** The engine never touches a socket, a clock, or a thread. That makes it testable byte by byte and usable from any driver. Keepalive and timeouts are a state machine over the caller's monotonic milliseconds (`on_time`, `next_deadline`); the `blocking` module is a thin adapter on top, not a second engine.
 - **Strict where the RFC is strict.** Payload lengths not in their shortest encoding are refused (RFC 6455 says the minimal encoding MUST be used, and accepting both forms gives one frame two encodings). A control frame using an extended length field is refused, whatever the field holds. The handshake head reader refuses bare CR or LF, line folding, and whitespace before a colon, and a request with two `Host` or two `Origin` fields, instead of picking one.
 - **Failures and refusals are different things.** A protocol violation fails the connection and queues the Close frame with its code; a call the protocol does not allow (an oversized Ping, a reserved close code, sending after Close) is refused and changes nothing. `WsError::close_code` tells them apart.
 - **Budgets come from headers, memory from bytes.** A frame or message over budget is refused from its header. A length in a header is a claim, so reassembly reserves at most 1 MiB ahead of the bytes that have actually arrived, even with the budgets lifted.
@@ -241,7 +249,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo bench --bench bench
 ```
 
-[`tests/autobahn.rs`](./tests/autobahn.rs) holds the protocol cases as data; [`tests/attacks.rs`](./tests/attacks.rs) one test per threat (cross-site hijacking, smuggled bodies, slow heads, floods, log injection, cross-protocol bytes); [`tests/prop.rs`](./tests/prop.rs) the property tests for every invariant in [`dev/DIRECTIVES.md`](./dev/DIRECTIVES.md); [`tests/handshake.rs`](./tests/handshake.rs) and [`tests/closing.rs`](./tests/closing.rs) the two handshakes; [`tests/echo.rs`](./tests/echo.rs) a real localhost echo, including a protocol failure and an `Origin` refusal; [`tests/regressions.rs`](./tests/regressions.rs) one test per defect the pre-release review found. Every `rust` example in this README and in [`docs/API.md`](./docs/API.md) is compiled and run as a doctest.
+[`tests/autobahn.rs`](./tests/autobahn.rs) holds the protocol cases as data; [`tests/keepalive.rs`](./tests/keepalive.rs), [`tests/backpressure.rs`](./tests/backpressure.rs), and [`tests/memory.rs`](./tests/memory.rs) the timers, the output budget, and memory per connection (with a counting allocator); [`tests/blocking.rs`](./tests/blocking.rs) and [`tests/http_net.rs`](./tests/http_net.rs) the blocking adapter over real sockets and the http-net hand-off; [`tests/attacks.rs`](./tests/attacks.rs) one test per threat (cross-site hijacking, smuggled bodies, slow heads, floods, log injection, cross-protocol bytes); [`tests/prop.rs`](./tests/prop.rs) the property tests for every invariant in [`dev/DIRECTIVES.md`](./dev/DIRECTIVES.md); [`tests/handshake.rs`](./tests/handshake.rs) and [`tests/closing.rs`](./tests/closing.rs) the two handshakes; [`tests/echo.rs`](./tests/echo.rs) a real localhost echo, including a protocol failure and an `Origin` refusal; [`tests/regressions.rs`](./tests/regressions.rs) one test per defect the pre-release review found. Every `rust` example in this README and in [`docs/API.md`](./docs/API.md) is compiled and run as a doctest.
 
 <hr>
 <br>

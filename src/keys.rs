@@ -29,6 +29,15 @@ impl MaskGen {
         }
     }
 
+    /// Overwrites the seed and the unused keys with zeros.
+    pub(crate) fn wipe(&mut self) {
+        self.seed = [0; 32];
+        self.pool = [0; 20];
+        self.used = self.pool.len();
+        let _ = core::hint::black_box(&mut self.seed);
+        let _ = core::hint::black_box(&mut self.pool);
+    }
+
     pub(crate) fn next_key(&mut self) -> [u8; 4] {
         if self.used + 4 > self.pool.len() {
             let mut h = Sha1::new();

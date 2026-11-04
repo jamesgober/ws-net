@@ -40,19 +40,19 @@ Delivered: `Connection` (sans-IO, both roles) with every RFC 6455 receive rule a
 
 Exit: every item implemented, documented with an example, and tested; local gate and CI green on all platforms.
 
-## v0.4.0 - Extended
-- [ ] Output budget `Limits::with_max_output` (default 32 MiB) with `WsError::OutputFull` and 256 bytes of headroom kept for automatic Pong and Close; `buffered_output`.
-- [ ] Memory: `Limits::with_input_buffer`, `with_retain`, `release_memory`, `memory_in_use`; the per-connection memory formula confirmed by counting-allocator peaks.
-- [ ] Keepalive: `Millis`, `Keepalive` (ping interval, idle, close, message timeouts), `Tick`, `on_time`, `next_deadline`; `IdleTimeout`, `CloseTimeout`, `MessageTimeout`; `should_close_transport`.
-- [ ] `poll_split` and `Sender`; `detach_message` and `MessageKind`; `Stats`; `wipe`.
-- [ ] Owned `Message`, `Event::to_message`, `Connection::send`.
-- [ ] `PreparedMessage` and `send_prepared` (encode once, broadcast).
-- [ ] `extension` module: `Sec-WebSocket-Extensions` parsed with parse-net (`list`, then parameters), `Offer`, `Param`, `Negotiated`, at most 16 offers of 16 parameters; `ServerHandshake::extensions`; `ClientHandshake::verify_full`.
-- [ ] Host allowlist `AcceptPolicy::with_hosts` (RFC 3986 authority through parse-net), `HostRefused`; `with_secure`; `write_refusal` (403, 429, 503 with `retry-after`).
-- [ ] `write_response_with`, `response_fields` (the 101 field list for an HTTP layer); `ClientHandshake::with_header`; `FrameHeader::encode_to_slice`; `CloseCode` classification.
-- [ ] `blocking` module (feature `std`): `accept`, `accept_with`, `connect`, `connect_with`, `WebSocket::{from_upgraded, read, send_*, ping, close, flush}`.
-- [ ] http-net integration test (dev-dependency): the sans-IO upgrade and the blocking `Upgraded` hand-off; example `http_net_upgrade`; examples `keepalive`, `broadcast`, `blocking_echo`, `blocking_client`.
-- [ ] `docs/INTEGRATION.md`.
+## v0.4.0 - Extended (DONE)
+- [x] Output budget `Limits::with_max_output` (default 32 MiB) with `WsError::OutputFull` and 256 bytes of headroom kept for automatic Pong and Close; `buffered_output`.
+- [x] Memory: `Limits::with_input_buffer`, `with_retain`, `release_memory`, `memory_in_use`; the per-connection memory formula confirmed by counting-allocator peaks.
+- [x] Keepalive: `Millis`, `Keepalive` (ping interval, idle, close, message timeouts), `Tick`, `on_time`, `next_deadline`; `IdleTimeout`, `CloseTimeout`, `MessageTimeout`; `should_close_transport`.
+- [x] `poll_split` and `Sender`; `detach_message` and `MessageKind`; `Stats`; `wipe`.
+- [x] Owned `Message`, `Event::to_message`, `Connection::send`.
+- [x] `PreparedMessage` and `send_prepared` (encode once, broadcast).
+- [x] `extension` module: `Sec-WebSocket-Extensions` parsed with parse-net (`list`, then parameters), `Offer`, `Param`, `Negotiated`, at most 16 offers of 16 parameters; `ServerHandshake::extensions`; `ClientHandshake::verify_full`.
+- [x] Host allowlist `AcceptPolicy::with_hosts` (RFC 3986 authority through parse-net), `HostRefused`; `with_secure`; `write_refusal` (403, 429, 503 with `retry-after`).
+- [x] `write_response_with`, `response_fields` (the 101 field list for an HTTP layer); `ClientHandshake::with_header`; `FrameHeader::encode_to_slice`; `CloseCode` classification.
+- [x] `blocking` module (feature `std`): `accept`, `accept_with`, `connect`, `connect_with`, `WebSocket::{from_upgraded, read, send_*, ping, close, flush}`.
+- [x] http-net integration test (dev-dependency): the sans-IO upgrade and the blocking `Upgraded` hand-off; example `http_net_upgrade`; examples `keepalive`, `broadcast`, `blocking_echo`, `blocking_client`.
+- [x] `docs/INTEGRATION.md`.
 
 Exit: all items tested; memory formula confirmed; http-net test green.
 
@@ -68,6 +68,7 @@ Exit: every P0 to P2 API item exists; no API addition after this version except 
 - [ ] 32-byte masking lanes (autovectorised, no `unsafe`); UTF-8 ASCII fast path; masking-key generator measured (SHA-1 counter mode against bulk OS refills).
 - [ ] Single-allocation handshake record; counting-allocator suite (no allocation per message in steady state); `try_reserve` on every growth.
 - [ ] `docs/PERFORMANCE.md` with Linux, macOS, and Windows numbers.
+- [ ] Re-measure the 0.4 per-message additions (output-budget check, counters) against 0.2.0 on a quiet machine; fix any row more than 5% behind (moved from 0.4: the 0.4 runs were on a loaded shared machine, `dev/PLAN.md` D-024).
 
 Exit: no per-message allocation; NFR targets met or each shortfall published with its cause.
 

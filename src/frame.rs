@@ -329,6 +329,34 @@ impl FrameHeader {
     /// assert_eq!(FrameHeader::new(Opcode::Ping, true, 126).encode(&mut out), Err(WsError::ControlTooLong));
     /// ```
     pub fn encode(&self, out: &mut Vec<u8>) -> Result<(), WsError> {
+        let mut stack = [0u8; MAX_HEADER_LEN];
+        let n = self.encode_to_slice(&mut stack)?;
+        out.extend_from_slice(stack.get(..n).unwrap_or(&[]));
+        Ok(())
+    }
+
+    /// Encodes the header into the front of `out`, with no allocation, and
+    /// returns its length. `out` needs at least
+    /// [`encoded_len`](Self::encoded_len) bytes ([`MAX_HEADER_LEN`] always
+    /// suffices).
+    ///
+    /// # Errors
+    ///
+    /// As [`encode`](Self::encode); [`WsError::InvalidArgument`] when `out`
+    /// is too short. Nothing is written on error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::frame::{FrameHeader, MAX_HEADER_LEN, Opcode};
+    ///
+    /// let mut buf = [0u8; MAX_HEADER_LEN];
+    /// let n = FrameHeader::new(Opcode::Text, true, 5).encode_to_slice(&mut buf)?;
+    /// assert_eq!(&buf[..n], [0x81, 0x05]);
+    /// assert!(FrameHeader::new(Opcode::Text, true, 500).encode_to_slice(&mut buf[..3]).is_err());
+    /// # Ok::<(), ws_net::WsError>(())
+    /// ```
+    pub fn encode_to_slice(&self, out: &mut [u8]) -> Result<usize, WsError> {
         if self.rsv > 0x07 {
             return Err(WsError::ReservedBits);
         }
@@ -343,21 +371,31 @@ impl FrameHeader {
         if self.payload_len > MAX_PAYLOAD {
             return Err(WsError::InvalidLength);
         }
+        let len = self.encoded_len();
+        let Some(out) = out.get_mut(..len) else {
+            return Err(WsError::InvalidArgument("buffer shorter than the header"));
+        };
         let b0 = (u8::from(self.fin) << 7) | (self.rsv << 4) | self.opcode.as_u8();
         let mask_bit = if self.mask.is_some() { 0x80 } else { 0 };
-        if self.payload_len < 126 {
-            out.extend_from_slice(&[b0, mask_bit | self.payload_len as u8]);
+        let mut header = [0u8; MAX_HEADER_LEN];
+        header[0] = b0;
+        let at = if self.payload_len < 126 {
+            header[1] = mask_bit | self.payload_len as u8;
+            2
         } else if let Ok(n) = u16::try_from(self.payload_len) {
-            out.extend_from_slice(&[b0, mask_bit | 126]);
-            out.extend_from_slice(&n.to_be_bytes());
+            header[1] = mask_bit | 126;
+            header[2..4].copy_from_slice(&n.to_be_bytes());
+            4
         } else {
-            out.extend_from_slice(&[b0, mask_bit | 127]);
-            out.extend_from_slice(&self.payload_len.to_be_bytes());
-        }
+            header[1] = mask_bit | 127;
+            header[2..10].copy_from_slice(&self.payload_len.to_be_bytes());
+            10
+        };
         if let Some(key) = self.mask {
-            out.extend_from_slice(&key);
+            header[at..at + 4].copy_from_slice(&key);
         }
-        Ok(())
+        out.copy_from_slice(header.get(..len).unwrap_or(&[]));
+        Ok(len)
     }
 }
 

@@ -110,23 +110,35 @@
 extern crate alloc;
 
 mod base64;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod blocking;
 mod close;
 mod conn;
 mod error;
+pub mod extension;
 pub mod frame;
 mod handshake;
 mod head;
+mod keepalive;
 mod keys;
+mod limits;
+mod message;
 mod policy;
+mod prepared;
 mod sha1;
 
 pub use close::{CloseCode, CloseFrame};
-pub use conn::{Connection, Event, Limits, Role, State};
+pub use conn::{Connection, Event, Role, Sender, State};
 pub use error::{HandshakeError, WsError};
 pub use handshake::{
     AcceptKey, ClientHandshake, HeadReader, ServerHandshake, Verified, accept_key,
 };
-pub use policy::{AcceptPolicy, Accepted, Acceptor, Decision, OriginPolicy, accept};
+pub use keepalive::{Keepalive, Millis, Tick};
+pub use limits::Limits;
+pub use message::{Message, MessageKind, Stats};
+pub use policy::{AcceptPolicy, Accepted, Acceptor, Decision, OriginPolicy, accept, write_refusal};
+pub use prepared::PreparedMessage;
 
 /// The crate version, as in `Cargo.toml`.
 ///
@@ -160,6 +172,14 @@ mod tests {
         assert::<crate::OriginPolicy>();
         assert::<crate::Acceptor>();
         assert::<crate::Accepted>();
+        assert::<crate::PreparedMessage>();
+        assert::<crate::Message>();
+        assert::<crate::Keepalive>();
+        assert::<crate::Stats>();
+        assert::<crate::Sender<'static>>();
+        assert::<crate::extension::Negotiated>();
+        #[cfg(feature = "std")]
+        assert::<crate::blocking::Error>();
     }
 
     #[test]

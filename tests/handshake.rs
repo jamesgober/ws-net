@@ -292,3 +292,103 @@ proptest! {
         prop_assert_eq!(client.verify_head(&response), Ok(Some((None, response.len()))));
     }
 }
+
+fn base_fields() -> Vec<(&'static str, &'static [u8])> {
+    vec![
+        ("Host", b"a.example"),
+        ("Upgrade", b"websocket"),
+        ("Connection", b"Upgrade"),
+        ("Sec-WebSocket-Version", b"13"),
+        ("Sec-WebSocket-Key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+    ]
+}
+
+#[test]
+fn test_server_extensions_offers_across_fields_counted() {
+    let eight: Vec<u8> = b"e;p,".repeat(8);
+    let mut fields = base_fields();
+    fields.push(("Sec-WebSocket-Extensions", &eight));
+    fields.push(("sec-websocket-extensions", &eight));
+    let h = ws_net::ServerHandshake::from_request("GET", "/", fields.clone()).unwrap();
+    assert_eq!(h.extensions().count(), 16);
+    assert!(h.extensions().all(|o| o.is_ok_and(|o| o.name() == "e")));
+    fields.push(("Sec-WebSocket-Extensions", b"one-more"));
+    assert_eq!(
+        ws_net::ServerHandshake::from_request("GET", "/", fields),
+        Err(ws_net::HandshakeError::InvalidExtensions)
+    );
+}
+
+#[test]
+fn test_server_extensions_malformed_refused_400() {
+    for bad in [&b"a; b=\"c d\""[..], b"a;;=", b"\"quoted\"", b"a; b=1 2"] {
+        let mut fields = base_fields();
+        fields.push(("Sec-WebSocket-Extensions", bad));
+        let e = ws_net::ServerHandshake::from_request("GET", "/", fields).unwrap_err();
+        assert_eq!(
+            (e, e.status()),
+            (ws_net::HandshakeError::InvalidExtensions, 400),
+            "{bad:?}"
+        );
+    }
+    // Empty values and empty elements are not offers.
+    let mut fields = base_fields();
+    fields.push(("Sec-WebSocket-Extensions", b" , "));
+    let h = ws_net::ServerHandshake::from_request("GET", "/", fields).unwrap();
+    assert_eq!(h.extensions().count(), 0);
+}
+
+#[test]
+fn test_client_verify_full_unoffered_extension_refused() {
+    let client = ws_net::ClientHandshake::with_nonce(*b"the sample nonce");
+    let fields: [(&str, &[u8]); 4] = [
+        ("Upgrade", b"websocket"),
+        ("Connection", b"Upgrade"),
+        ("Sec-WebSocket-Accept", b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+        ("Sec-WebSocket-Extensions", b"permessage-deflate"),
+    ];
+    assert_eq!(
+        client.verify_full(101, fields),
+        Err(ws_net::HandshakeError::UnexpectedExtension)
+    );
+}
+
+#[test]
+fn test_extra_headers_reserved_and_bad_values_refused() {
+    let mut out = Vec::new();
+    for (name, value) in [
+        ("Host", &b"x"[..]),
+        ("connection", b"close"),
+        ("SEC-WEBSOCKET-PROTOCOL", b"x"),
+        ("Content-Length", b"0"),
+        ("bad name", b"x"),
+        ("x-ok", b"a\r\nb"),
+        ("x-ok", b" padded"),
+    ] {
+        let h = ws_net::ClientHandshake::with_nonce([0; 16]).with_header(name, value);
+        assert_eq!(
+            h.write_request("a", "/", &mut out),
+            Err(ws_net::HandshakeError::InvalidRequest),
+            "{name}"
+        );
+    }
+    assert!(out.is_empty());
+    let (server, _) = ws_net::ServerHandshake::from_head(
+        b"GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+          Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    )
+    .unwrap()
+    .unwrap();
+    let none = ws_net::extension::Negotiated::none();
+    assert_eq!(
+        server.write_response_with(None, &none, &[("Sec-WebSocket-Accept", b"x")], &mut out),
+        Err(ws_net::HandshakeError::InvalidRequest)
+    );
+    assert!(out.is_empty());
+    server
+        .write_response_with(None, &none, &[("set-cookie", b"a=b; HttpOnly")], &mut out)
+        .unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert!(text.ends_with("set-cookie: a=b; HttpOnly\r\n\r\n"));
+}

@@ -138,7 +138,7 @@ pub use keepalive::{Keepalive, Millis, Tick};
 pub use limits::Limits;
 pub use message::{Message, MessageKind, Stats};
 pub use policy::{AcceptPolicy, Accepted, Acceptor, Decision, OriginPolicy, accept, write_refusal};
-pub use prepared::PreparedMessage;
+pub use prepared::{PreparedMessage, SendOptions};
 
 /// The crate version, as in `Cargo.toml`.
 ///

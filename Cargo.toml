@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "ws-net"
-version = "0.4.0"
+version = "0.5.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -31,6 +31,9 @@ documentation = "https://docs.rs/ws-net"
 
 # Authors
 authors = ["James Gober <me@jamesgober.com>"]
+
+# CI tooling stays out of the published crate.
+exclude = ["autobahn/", ".github/"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -112,6 +115,14 @@ required-features = ["std"]
 
 [[example]]
 name              = "http_net_upgrade"
+required-features = ["std"]
+
+[[example]]
+name              = "autobahn_server"
+required-features = ["std"]
+
+[[example]]
+name              = "autobahn_client"
 required-features = ["std"]
 
 

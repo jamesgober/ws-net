@@ -8,6 +8,76 @@ use crate::{
     limits::Limits,
 };
 
+/// Per-message send options: whether a message may be compressed. The
+/// default follows the connection (compress when permessage-deflate was
+/// negotiated and the message is large enough). Compression is not
+/// available in this version, so every option sends the message
+/// uncompressed; `uncompressed()` keeps that guarantee once it is, for
+/// messages that mix attacker-influenced data with secrets (CRIME and
+/// BREACH style attacks, RFC 7692 section 8).
+///
+/// # Examples
+///
+/// ```
+/// use ws_net::SendOptions;
+///
+/// assert_eq!(SendOptions::new(), SendOptions::default());
+/// assert!(SendOptions::uncompressed().is_uncompressed());
+/// assert!(!SendOptions::compressed().is_uncompressed());
+/// ```
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SendOptions {
+    compress: Option<bool>,
+}
+
+impl SendOptions {
+    /// Follow the connection.
+    ///
+    /// # Examples
+    ///
+    /// See [`SendOptions`].
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { compress: None }
+    }
+
+    /// Never compress this message.
+    ///
+    /// # Examples
+    ///
+    /// See [`SendOptions`].
+    #[must_use]
+    pub const fn uncompressed() -> Self {
+        Self {
+            compress: Some(false),
+        }
+    }
+
+    /// Compress this message when compression was negotiated, whatever its
+    /// size.
+    ///
+    /// # Examples
+    ///
+    /// See [`SendOptions`].
+    #[must_use]
+    pub const fn compressed() -> Self {
+        Self {
+            compress: Some(true),
+        }
+    }
+
+    /// Whether these options forbid compression.
+    ///
+    /// # Examples
+    ///
+    /// See [`SendOptions`].
+    #[must_use]
+    pub const fn is_uncompressed(&self) -> bool {
+        matches!(self.compress, Some(false))
+    }
+}
+
 /// A server message encoded once, as complete unmasked frames, for sending
 /// to many connections with
 /// [`Connection::send_prepared`](crate::Connection::send_prepared): one

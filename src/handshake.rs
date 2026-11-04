@@ -954,6 +954,53 @@ impl ClientHandshake {
         Ok(())
     }
 
+    /// The client [`Connection`](crate::Connection) for a verified
+    /// response, with masking keys from the OS cryptographic random source
+    /// and the negotiated extensions (feature `std`). It fails closed as
+    /// [`Connection::client`](crate::Connection::client) does.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::ClientHandshake;
+    ///
+    /// let client = ClientHandshake::with_nonce(*b"the sample nonce");
+    /// let response = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
+    ///     Connection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
+    /// let (verified, _) = ws_net::HeadReader::new().client(&client, response)?.expect("complete");
+    /// let mut conn = client.connection(&verified);
+    /// conn.send_text("hi").unwrap();
+    /// assert_eq!(conn.output()[1] & 0x80, 0x80); // masked
+    /// # Ok::<(), ws_net::HandshakeError>(())
+    /// ```
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+    #[must_use]
+    pub fn connection(&self, verified: &Verified<'_>) -> crate::Connection {
+        crate::Connection::client().with_extensions(verified.extensions)
+    }
+
+    /// As [`connection`](Self::connection) with a caller seed (`no_std`,
+    /// reproducible tests); the seed must come from a cryptographic source.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{ClientHandshake, Verified};
+    ///
+    /// let client = ClientHandshake::with_nonce([0; 16]);
+    /// let conn = client.connection_with_seed(&Verified::none(), [3; 32]);
+    /// assert_eq!(conn.role(), ws_net::Role::Client);
+    /// ```
+    #[must_use]
+    pub fn connection_with_seed(
+        &self,
+        verified: &Verified<'_>,
+        seed: [u8; 32],
+    ) -> crate::Connection {
+        crate::Connection::client_with_seed(seed).with_extensions(verified.extensions)
+    }
+
     /// Checks the server's response as [`verify`](Self::verify) does, and
     /// returns everything verified: the selected subprotocol and the
     /// negotiated extensions. This client offers no extension in this
@@ -1101,6 +1148,25 @@ impl ClientHandshake {
         let status = head::status_line(head.first).ok_or(HandshakeError::MalformedHead)?;
         let selected = self.verify(status, head.fields())?;
         Ok(Some((selected, head.len)))
+    }
+}
+
+impl Verified<'_> {
+    /// A verification with no subprotocol and no extensions, for building a
+    /// client connection by hand (tests, a handshake checked elsewhere).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let v = ws_net::Verified::none();
+    /// assert_eq!(v.protocol, None);
+    /// ```
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            protocol: None,
+            extensions: Negotiated::none(),
+        }
     }
 }
 

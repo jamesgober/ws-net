@@ -13,6 +13,35 @@
 
 ---
 
+## [0.5.0] - 2026-11-04
+
+Feature complete, except permessage-deflate, which waits for a first-party
+DEFLATE crate and moves to 0.6. The Autobahn TestSuite now runs in CI in
+both roles, and every case of sections 1 to 10 passes strictly.
+
+### Added
+
+- `Connection::with_extensions` and `negotiated`; `ClientHandshake::connection`
+  (feature `std`) and `connection_with_seed`; `Verified::none`.
+- `SendOptions` (`new`, `uncompressed`, `compressed`, `is_uncompressed`) and
+  `Connection::send_text_with`, `send_binary_with`. No effect on the wire
+  until compression exists; `uncompressed()` keeps its meaning then.
+- `FrameHeader::with_rsv`.
+- The Autobahn TestSuite (`crossbario/autobahn-testsuite:25.10.1`) in CI for
+  the server role (`fuzzingclient` against `examples/autobahn_server`) and
+  the client role (`fuzzingserver` with `examples/autobahn_client`), with a
+  strict report check (`autobahn/check.py`): 301 cases, 0 failures in each
+  role; 7.1.6, 7.13.1, and 7.13.2 are informational.
+
+### Changed
+
+- Connections built by `accept`, `ServerHandshake::accept`, and
+  `ClientHandshake::connection` carry what the handshake negotiated.
+- permessage-deflate (feature `deflate`) moved from 0.5 to 0.6: no
+  first-party raw DEFLATE crate exists yet.
+
+---
+
 ## [0.4.0] - 2026-11-04
 
 Extended: everything a server with many connections needs around the
@@ -257,7 +286,8 @@ Initial scaffold and repository bootstrap. No domain logic yet: this release est
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jamesgober/ws-net/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jamesgober/ws-net/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamesgober/ws-net/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamesgober/ws-net/compare/v0.1.0...v0.2.0

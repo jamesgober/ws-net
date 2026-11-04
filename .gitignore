@@ -17,3 +17,6 @@ Desktop.ini
 
 # Libraries do not commit the lockfile
 Cargo.lock
+
+# Autobahn TestSuite reports
+/autobahn/reports/

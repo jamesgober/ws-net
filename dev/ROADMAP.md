@@ -56,14 +56,16 @@ Exit: every item implemented, documented with an example, and tested; local gate
 
 Exit: all items tested; memory formula confirmed; http-net test green.
 
-## v0.5.0 - Feature complete
-- [ ] permessage-deflate behind the non-default `deflate` feature (RFC 7692): negotiation both roles, all four parameters, window bits 8 to 15; decompression bounded during inflation; per-message `SendOptions`; context takeover memory counted; prepared messages with a compressed form. Needs the compression crate (move 4 above).
-- [ ] `Connection::with_extensions`, `negotiated`; `ClientHandshake::with_deflate`, `connection`; `FrameHeader::with_rsv`.
-- [ ] Preliminary Autobahn run, sections 1 to 10 (and 12, 13 with deflate), both roles.
+## v0.5.0 - Feature complete (DONE except the move below)
+- [x] `Connection::with_extensions`, `negotiated`; `ClientHandshake::connection`, `connection_with_seed`; `Verified::none`; `FrameHeader::with_rsv`.
+- [x] `SendOptions` and `send_text_with`, `send_binary_with` (no effect on the wire until compression exists; `uncompressed()` keeps its meaning then).
+- [x] Autobahn TestSuite run, sections 1 to 10, both roles: `examples/autobahn_server`, `examples/autobahn_client`, `autobahn/check.py` (strict: OK or INFORMATIONAL only), as a CI job (brought forward from 0.7; no local Docker, so the run is in CI).
+- **Moved to 0.6 (reason: unpublished dependency, move 4 above):** permessage-deflate behind the non-default `deflate` feature (RFC 7692): negotiation both roles, all four parameters, window bits 8 to 15; decompression bounded during inflation; context takeover memory counted; prepared messages with a compressed form; `ClientHandshake::with_deflate`, `AcceptPolicy::with_deflate`, `DeflateConfig`, `DeflateParams`, `WsError::InvalidCompressedData`; Autobahn sections 12 and 13. Checked 2026-11-04: no first-party raw DEFLATE crate exists. Creating one (a new public crate) or an in-crate DEFLATE module is the owner's call (`dev/PLAN.md` D-025).
 
-Exit: every P0 to P2 API item exists; no API addition after this version except fixes found by testing.
+Exit: every P0 to P2 API item exists except the moved deflate items; no API addition after this version except those and fixes found by testing.
 
 ## v0.6.0 - Optimisation
+- [ ] permessage-deflate, if the first-party DEFLATE crate is published by then (moved from 0.5); otherwise it moves out of 1.0 to 1.1, recorded here.
 - [ ] Competitor harness outside the crate's dependency graph: tungstenite, fastwebsockets, tokio-websockets, ratchet; frame-level receive, send, handshake.
 - [ ] 32-byte masking lanes (autovectorised, no `unsafe`); UTF-8 ASCII fast path; masking-key generator measured (SHA-1 counter mode against bulk OS refills).
 - [ ] Single-allocation handshake record; counting-allocator suite (no allocation per message in steady state); `try_reserve` on every growth.

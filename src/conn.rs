@@ -7,12 +7,13 @@ use core::{fmt, hint::black_box};
 use crate::{
     close::{CloseCode, CloseFrame},
     error::WsError,
+    extension::Negotiated,
     frame::{FrameHeader, Opcode, apply_mask},
     keepalive::{Clock, Keepalive, Millis, Tick, UNSET, due},
     keys::MaskGen,
     limits::Limits,
     message::{Message, MessageKind, Stats},
-    prepared::PreparedMessage,
+    prepared::{PreparedMessage, SendOptions},
 };
 
 /// Smallest input allocation.
@@ -572,6 +573,7 @@ pub struct Connection {
     reader: Reader,
     writer: Writer,
     clock: Clock,
+    negotiated: Negotiated,
 }
 
 impl fmt::Debug for Connection {
@@ -628,6 +630,7 @@ impl Connection {
                 messages_out: 0,
             },
             clock: Clock::default(),
+            negotiated: Negotiated::none(),
         }
     }
 
@@ -731,6 +734,36 @@ impl Connection {
         self.limits = limits;
         self.writer.max_output = limits.max_output();
         self
+    }
+
+    /// Applies what the opening handshake negotiated. A connection built
+    /// by [`accept`](crate::accept), [`ServerHandshake::accept`](crate::ServerHandshake::accept),
+    /// or [`ClientHandshake::connection`](crate::ClientHandshake::connection)
+    /// already has it. No extension is negotiated in this version, so the
+    /// value is always [`Negotiated::none`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{Connection, extension::Negotiated};
+    ///
+    /// let conn = Connection::server().with_extensions(Negotiated::none());
+    /// assert!(conn.negotiated().is_empty());
+    /// ```
+    #[must_use]
+    pub fn with_extensions(mut self, negotiated: Negotiated) -> Self {
+        self.negotiated = negotiated;
+        self
+    }
+
+    /// The extensions in force.
+    ///
+    /// # Examples
+    ///
+    /// See [`with_extensions`](Self::with_extensions).
+    #[must_use]
+    pub fn negotiated(&self) -> &Negotiated {
+        &self.negotiated
     }
 
     /// The limits.
@@ -1216,6 +1249,53 @@ impl Connection {
     /// ```
     pub fn send_binary(&mut self, data: &[u8]) -> Result<(), WsError> {
         self.writer.send_message(&self.limits, Kind::Binary, data)
+    }
+
+    /// As [`send_text`](Self::send_text), with per-message
+    /// [`SendOptions`]. With no compression negotiated (always, in this
+    /// version), the options change nothing on the wire; code written
+    /// against them keeps its meaning when permessage-deflate lands, so a
+    /// message carrying a secret can say `SendOptions::uncompressed()` now.
+    ///
+    /// # Errors
+    ///
+    /// As [`send_text`](Self::send_text).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{Connection, SendOptions};
+    ///
+    /// let mut conn = Connection::server();
+    /// conn.send_text_with("token=s3cr3t", SendOptions::uncompressed())?;
+    /// assert_eq!(conn.output()[0], 0x81); // RSV1 clear: not compressed
+    /// # Ok::<(), ws_net::WsError>(())
+    /// ```
+    pub fn send_text_with(&mut self, text: &str, options: SendOptions) -> Result<(), WsError> {
+        let _ = options;
+        self.send_text(text)
+    }
+
+    /// As [`send_binary`](Self::send_binary), with per-message
+    /// [`SendOptions`].
+    ///
+    /// # Errors
+    ///
+    /// As [`send_binary`](Self::send_binary).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{Connection, SendOptions};
+    ///
+    /// let mut conn = Connection::server();
+    /// conn.send_binary_with(&[1], SendOptions::new())?;
+    /// assert_eq!(conn.output(), [0x82, 0x01, 1]);
+    /// # Ok::<(), ws_net::WsError>(())
+    /// ```
+    pub fn send_binary_with(&mut self, data: &[u8], options: SendOptions) -> Result<(), WsError> {
+        let _ = options;
+        self.send_binary(data)
     }
 
     /// Sends one fragment of a text message; `fin` ends the message. Each

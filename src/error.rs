@@ -84,6 +84,13 @@ pub enum WsError {
     /// Close frame was sent. The text names the rule. Nothing was sent and
     /// the connection is unchanged.
     InvalidState(&'static str),
+    /// Refused: this client has no masking keys because the operating
+    /// system's random source failed when it was created
+    /// ([`Connection::client`](crate::Connection::client)). Nothing was
+    /// queued; create the connection again with
+    /// [`Connection::try_client`](crate::Connection::try_client) and fail the
+    /// connection attempt if it errors.
+    RandomUnavailable,
 }
 
 impl WsError {
@@ -120,7 +127,7 @@ impl WsError {
             Self::InvalidUtf8 => Some(CloseCode::INVALID_PAYLOAD),
             Self::FrameTooLarge | Self::MessageTooLarge => Some(CloseCode::MESSAGE_TOO_BIG),
             Self::UnexpectedEof => Some(CloseCode::ABNORMAL),
-            Self::InvalidArgument(_) | Self::InvalidState(_) => None,
+            Self::InvalidArgument(_) | Self::InvalidState(_) | Self::RandomUnavailable => None,
         }
     }
 }
@@ -145,6 +152,7 @@ impl fmt::Display for WsError {
             Self::UnexpectedEof => "transport closed without a closing handshake",
             Self::InvalidArgument(rule) => return write!(f, "invalid argument: {rule}"),
             Self::InvalidState(rule) => return write!(f, "invalid call order: {rule}"),
+            Self::RandomUnavailable => "no masking keys: the OS random source failed",
         };
         f.write_str(msg)
     }
@@ -215,24 +223,46 @@ pub enum HandshakeError {
     /// whitespace or control characters, or the path does not start with
     /// `/`.
     InvalidRequest,
+    /// The upgrade request declares a body (`Transfer-Encoding`, or a
+    /// `Content-Length` other than `0`). The bytes after the head must be
+    /// WebSocket frames only, or a front proxy that reads the body would
+    /// disagree with this end about where the frames start (request
+    /// smuggling). Answer `400`.
+    UnexpectedBody,
+    /// The server's policy refused the `Origin` (or its absence): the page
+    /// is not one allowed to connect (cross-site WebSocket hijacking).
+    /// Answer `403`.
+    OriginRefused,
+    /// The server's policy requires a subprotocol and the client offered
+    /// none of the server's. Answer `400`.
+    ProtocolRequired,
+    /// The client side: the operating system's random source failed, so no
+    /// unpredictable nonce exists for this handshake. Nothing is written;
+    /// retry later or fail the connection attempt.
+    RandomUnavailable,
 }
 
 impl HandshakeError {
     /// The HTTP status a server should answer a refused request with: 426
-    /// for an unsupported version, 431 for an oversized head, 400 otherwise
-    /// (client-side errors also report 400; they are not answered).
+    /// for an unsupported version, 431 for an oversized head, 403 for a
+    /// refused Origin, 400 otherwise (client-side errors also report 400,
+    /// and [`RandomUnavailable`](Self::RandomUnavailable) 500; they are not
+    /// answered).
     ///
     /// # Examples
     ///
     /// ```
     /// assert_eq!(ws_net::HandshakeError::InvalidKey.status(), 400);
     /// assert_eq!(ws_net::HandshakeError::UnsupportedVersion.status(), 426);
+    /// assert_eq!(ws_net::HandshakeError::OriginRefused.status(), 403);
     /// ```
     #[must_use]
     pub const fn status(&self) -> u16 {
         match self {
             Self::UnsupportedVersion => 426,
             Self::HeadTooLarge => 431,
+            Self::OriginRefused => 403,
+            Self::RandomUnavailable => 500,
             _ => 400,
         }
     }
@@ -253,6 +283,8 @@ impl HandshakeError {
         out.extend_from_slice(match self.status() {
             426 => &b"HTTP/1.1 426 Upgrade Required\r\nsec-websocket-version: 13\r\n"[..],
             431 => b"HTTP/1.1 431 Request Header Fields Too Large\r\n",
+            403 => b"HTTP/1.1 403 Forbidden\r\n",
+            500 => b"HTTP/1.1 500 Internal Server Error\r\n",
             _ => b"HTTP/1.1 400 Bad Request\r\n",
         });
         out.extend_from_slice(b"content-length: 0\r\nconnection: close\r\n\r\n");
@@ -286,6 +318,12 @@ impl fmt::Display for HandshakeError {
             Self::InvalidRequest => f.write_str(
                 "host, path, or origin is empty or contains whitespace or control characters",
             ),
+            Self::UnexpectedBody => f.write_str(
+                "the upgrade request declares a body (Transfer-Encoding or Content-Length)",
+            ),
+            Self::OriginRefused => f.write_str("the Origin is not allowed to connect"),
+            Self::ProtocolRequired => f.write_str("none of the server's subprotocols was offered"),
+            Self::RandomUnavailable => f.write_str("the operating system's random source failed"),
         }
     }
 }

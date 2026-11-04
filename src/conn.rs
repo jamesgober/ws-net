@@ -37,9 +37,9 @@ const RESERVE_CAP: u64 = 1024 * 1024;
 /// Both are checked from frame headers, before the payload is read: a frame
 /// over the frame budget, or one that would take its message over the
 /// message budget, fails the connection with close code 1009. The defaults
-/// are the budgets of LexerSketch Studio. Outgoing messages larger than the
-/// frame budget are split into frames of at most that size, so a peer with
-/// the same limits accepts them.
+/// are the budgets of LexerSketch Studio. Outgoing messages are split into
+/// frames of at most [`send_frame`](Self::send_frame) bytes, which equals
+/// the frame budget unless set, so a peer with the same limits accepts them.
 ///
 /// # Examples
 ///
@@ -52,6 +52,8 @@ const RESERVE_CAP: u64 = 1024 * 1024;
 pub struct Limits {
     frame: u64,
     message: u64,
+    /// Outgoing frame payload size; `None` follows `frame`.
+    send_frame: Option<u64>,
 }
 
 impl Default for Limits {
@@ -73,6 +75,7 @@ impl Limits {
         Self {
             frame: 1024 * 1024,
             message: 16 * 1024 * 1024,
+            send_frame: None,
         }
     }
 
@@ -125,6 +128,44 @@ impl Limits {
     #[must_use]
     pub const fn max_message(&self) -> u64 {
         self.message
+    }
+
+    /// Sets the largest outgoing frame payload, at least 125 bytes. Larger
+    /// messages are split into frames of this size. Until it is set, it
+    /// follows [`max_frame`](Self::max_frame): what this end sends is what
+    /// a peer with the same limits accepts.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::Limits;
+    ///
+    /// // Accept frames up to 1 MiB, send frames of at most 16 KiB.
+    /// let limits = Limits::new().with_send_frame(16 * 1024);
+    /// assert_eq!((limits.max_frame(), limits.send_frame()), (1 << 20, 16 * 1024));
+    /// assert_eq!(Limits::new().with_send_frame(0).send_frame(), 125);
+    /// ```
+    #[must_use]
+    pub const fn with_send_frame(mut self, bytes: u64) -> Self {
+        self.send_frame = Some(if bytes < 125 { 125 } else { bytes });
+        self
+    }
+
+    /// The largest outgoing frame payload.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::Limits;
+    ///
+    /// assert_eq!(Limits::new().with_max_frame(4096).send_frame(), 4096);
+    /// ```
+    #[must_use]
+    pub const fn send_frame(&self) -> u64 {
+        match self.send_frame {
+            Some(bytes) => bytes,
+            None => self.frame,
+        }
     }
 }
 
@@ -306,6 +347,11 @@ impl Writer {
 
     fn raw_frame(&mut self, opcode: Opcode, fin: bool, payload: &[u8]) -> Result<(), WsError> {
         let mut header = FrameHeader::new(opcode, fin, payload.len() as u64);
+        // A client without a key source never sends: an unmasked client
+        // frame is a protocol error, and a predictable key defeats masking.
+        if self.role == Role::Client && self.masks.is_none() {
+            return Err(WsError::RandomUnavailable);
+        }
         let key = self.masks.as_mut().map(MaskGen::next_key);
         if let Some(k) = key {
             header = header.with_mask(k);
@@ -379,6 +425,9 @@ impl Writer {
     }
 
     fn check_can_send(&self) -> Result<(), WsError> {
+        if self.role == Role::Client && self.masks.is_none() {
+            return Err(WsError::RandomUnavailable);
+        }
         if self.sent_close || self.failed {
             return Err(WsError::InvalidState("a Close frame was already sent"));
         }
@@ -491,8 +540,14 @@ impl Connection {
         Self::with_role(Role::Server, None)
     }
 
-    /// The client end, with masking keys from the operating system's random
-    /// source (feature `std`).
+    /// The client end, with masking keys derived from a seed drawn from the
+    /// operating system's cryptographic random source (feature `std`).
+    ///
+    /// The OS source can fail (a sandbox that filters the system call). This
+    /// constructor then fails closed: the connection is [`State::Closed`]
+    /// and every send returns [`WsError::RandomUnavailable`]; it never
+    /// falls back to a weaker source and never panics. Use
+    /// [`try_client`](Self::try_client) to see the failure up front.
     ///
     /// # Examples
     ///
@@ -505,13 +560,41 @@ impl Connection {
     #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     #[must_use]
     pub fn client() -> Self {
-        Self::client_with_seed(crate::keys::os_seed())
+        Self::try_client().unwrap_or_else(|_| {
+            let mut conn = Self::with_role(Role::Client, None);
+            conn.writer.failed = true;
+            conn
+        })
+    }
+
+    /// The client end, with masking keys from the operating system's
+    /// cryptographic random source, or an error when that source fails
+    /// (feature `std`).
+    ///
+    /// # Errors
+    ///
+    /// [`WsError::RandomUnavailable`] when the OS random source cannot
+    /// supply the 32-byte seed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let conn = ws_net::Connection::try_client()?;
+    /// assert_eq!(conn.role(), ws_net::Role::Client);
+    /// # Ok::<(), ws_net::WsError>(())
+    /// ```
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+    pub fn try_client() -> Result<Self, WsError> {
+        let seed = crate::keys::os_seed().ok_or(WsError::RandomUnavailable)?;
+        Ok(Self::client_with_seed(seed))
     }
 
     /// The client end, with masking keys derived from a 32-byte secret
     /// `seed` (for `no_std`, or for reproducible tests). The seed must be
     /// unpredictable to the peer: RFC 6455 section 5.3 requires that a
-    /// peer cannot predict masking keys.
+    /// peer cannot predict masking keys, so take it from a cryptographic
+    /// random source, never from a clock, a counter, or a fixed value.
     ///
     /// # Examples
     ///
@@ -583,6 +666,42 @@ impl Connection {
         } else {
             State::Open
         }
+    }
+
+    /// Whether the connection is [`State::Open`]: neither end has sent a
+    /// Close and it has not failed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut conn = ws_net::Connection::server();
+    /// assert!(conn.is_open());
+    /// conn.close(ws_net::CloseCode::NORMAL, "").unwrap();
+    /// assert!(!conn.is_open());
+    /// ```
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.state() == State::Open
+    }
+
+    /// Whether a new data message would be accepted now: no Close was sent,
+    /// the connection has not failed, and no fragmented message is being
+    /// sent. After the peer's Close this end may still send until it echoes
+    /// (the echo is automatic, so in practice the answer is then `false`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut conn = ws_net::Connection::server();
+    /// assert!(conn.can_send());
+    /// conn.send_text_fragment("part", false).unwrap();
+    /// assert!(!conn.can_send()); // finish the fragmented message first
+    /// conn.send_text_fragment("", true).unwrap();
+    /// assert!(conn.can_send());
+    /// ```
+    #[must_use]
+    pub fn can_send(&self) -> bool {
+        !self.writer.sent_close && !self.writer.failed && self.writer.sending.is_none()
     }
 
     /// Copies as much of `bytes` into the input buffer as fits (64 KiB at
@@ -906,11 +1025,11 @@ impl Connection {
         self.write_fragments(kind.opcode(), data, true)
     }
 
-    /// Writes `data` as one or more frames of at most `max_frame` bytes;
+    /// Writes `data` as one or more frames of at most `send_frame` bytes;
     /// the first uses `first`, the rest are continuations; `fin` marks the
     /// last.
     fn write_fragments(&mut self, first: Opcode, data: &[u8], fin: bool) -> Result<(), WsError> {
-        let max = usize::try_from(self.limits.frame)
+        let max = usize::try_from(self.limits.send_frame())
             .unwrap_or(usize::MAX)
             .max(1);
         if data.len() <= max {

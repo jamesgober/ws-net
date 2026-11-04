@@ -85,7 +85,53 @@ impl Opcode {
     pub const fn is_control(&self) -> bool {
         matches!(self, Self::Close | Self::Ping | Self::Pong)
     }
+
+    /// Whether this is a data opcode (text, binary, continuation).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::frame::Opcode;
+    ///
+    /// assert!(Opcode::Continuation.is_data() && !Opcode::Pong.is_data());
+    /// ```
+    #[must_use]
+    pub const fn is_data(&self) -> bool {
+        !self.is_control()
+    }
 }
+
+/// The longest frame header: 2 bytes, an 8-byte extended length, and a
+/// 4-byte masking key.
+///
+/// # Examples
+///
+/// ```
+/// use ws_net::frame::{FrameHeader, MAX_HEADER_LEN, MAX_PAYLOAD_LEN, Opcode};
+///
+/// let h = FrameHeader::new(Opcode::Binary, true, MAX_PAYLOAD_LEN).with_mask([1, 2, 3, 4]);
+/// assert_eq!(h.encoded_len(), MAX_HEADER_LEN);
+/// ```
+pub const MAX_HEADER_LEN: usize = 14;
+
+/// The largest control frame payload (RFC 6455 section 5.5).
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(ws_net::frame::MAX_CONTROL_PAYLOAD, 125);
+/// ```
+pub const MAX_CONTROL_PAYLOAD: usize = 125;
+
+/// The largest payload length a header can carry: the most significant bit
+/// of the 64-bit length must be 0 (RFC 6455 section 5.2).
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(ws_net::frame::MAX_PAYLOAD_LEN, (1 << 63) - 1);
+/// ```
+pub const MAX_PAYLOAD_LEN: u64 = i64::MAX as u64;
 
 /// A frame header.
 ///
@@ -127,7 +173,7 @@ pub struct FrameHeader {
 
 /// The largest payload length the protocol can express (the 64-bit length
 /// field's most significant bit must be zero).
-const MAX_PAYLOAD: u64 = i64::MAX as u64;
+const MAX_PAYLOAD: u64 = MAX_PAYLOAD_LEN;
 
 impl FrameHeader {
     /// A header with no RSV bits and no mask.

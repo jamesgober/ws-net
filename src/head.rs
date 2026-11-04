@@ -38,28 +38,61 @@ impl<'a> Head<'a> {
     }
 }
 
+/// How far the line scan got: carried between calls so that a head that
+/// arrives in pieces is scanned once in total, not once per piece.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct Scan {
+    /// Bytes scanned so far.
+    pos: usize,
+    /// Start of the line being scanned.
+    line_start: usize,
+    /// The byte before `pos`.
+    prev: u8,
+    /// Bytes examined over every call, for the linear-work test.
+    #[cfg(test)]
+    examined: usize,
+}
+
 /// Splits the head off the front of `bytes`: `Ok(None)` until the blank
-/// line that ends it has arrived. Each call scans at most [`MAX_HEAD`]
-/// bytes, so a caller that retries after every read does bounded work per
-/// read.
+/// line that ends it has arrived. One-shot: every call scans from the
+/// start. [`split_resume`] is the resumable form.
 pub(crate) fn split(bytes: &[u8]) -> Result<Option<Head<'_>>, HandshakeError> {
+    split_resume(&mut Scan::default(), bytes)
+}
+
+/// As [`split`], continuing from `state`: `bytes` must be the buffer an
+/// earlier call saw, grown at the end. Only the new bytes are scanned for
+/// line endings, so the total work over all calls is linear in the head,
+/// however it was cut (the slow-head CPU amplification of CVE-2023-43669
+/// is not possible). The fields are validated once, when the head is
+/// complete.
+pub(crate) fn split_resume<'a>(
+    state: &mut Scan,
+    bytes: &'a [u8],
+) -> Result<Option<Head<'a>>, HandshakeError> {
+    if bytes.len() < state.pos {
+        return Err(HandshakeError::InvalidRequest);
+    }
     let window = bytes.get(..MAX_HEAD).unwrap_or(bytes);
-    let mut line_start = 0;
     let mut end = None;
-    let mut prev = 0u8;
-    for (i, &b) in window.iter().enumerate() {
+    for (i, &b) in window.iter().enumerate().skip(state.pos) {
+        #[cfg(test)]
+        {
+            state.examined += 1;
+        }
         match b {
-            b'\n' if prev != b'\r' => return Err(HandshakeError::MalformedHead),
-            b'\n' if i == line_start + 1 => {
+            b'\n' if state.prev != b'\r' => return Err(HandshakeError::MalformedHead),
+            b'\n' if i == state.line_start + 1 => {
                 // An empty line: the head ends here.
                 end = Some(i + 1);
                 break;
             }
-            b'\n' => line_start = i + 1,
-            _ if prev == b'\r' => return Err(HandshakeError::MalformedHead),
+            b'\n' => state.line_start = i + 1,
+            _ if state.prev == b'\r' => return Err(HandshakeError::MalformedHead),
             _ => {}
         }
-        prev = b;
+        state.prev = b;
+        state.pos = i + 1;
     }
     let Some(len) = end else {
         return if bytes.len() >= MAX_HEAD {
@@ -68,6 +101,7 @@ pub(crate) fn split(bytes: &[u8]) -> Result<Option<Head<'_>>, HandshakeError> {
             Ok(None)
         };
     };
+    state.pos = len;
     // `len` is at least 2 (the blank line) and every line ends in CRLF.
     let head = bytes.get(..len.saturating_sub(2)).unwrap_or(&[]);
     let first_end = head

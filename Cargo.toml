@@ -45,10 +45,11 @@ path = "src/lib.rs"
 # #################################
 [features]
 default = ["std"]
-# OS-seeded masking keys and handshake nonces (Connection::client,
-# ClientHandshake::new). Without it the crate is no_std and needs only
-# `alloc`; clients then take a caller-supplied seed.
-std = []
+# Masking-key seeds and handshake nonces from the OS cryptographic random
+# source through mod-rand (Connection::client, ClientHandshake::new).
+# Without it the crate is no_std and needs only `alloc`; clients then take a
+# caller-supplied seed.
+std = ["dep:mod-rand"]
 
 
 # DEPENDENCIES
@@ -58,6 +59,9 @@ std = []
 # grammar (tokens, OWS, lists, field-value checks, Origin, Host). Default
 # features off: no_std, no allocator.
 parse-net = { version = "0.9", default-features = false }
+# First party, no dependencies: the OS cryptographic random source (its
+# tier 3) for masking seeds and nonces, feature `std` only.
+mod-rand = { version = "1", default-features = false, features = ["tier3"], optional = true }
 # SHA-1 and base64 for the handshake stay small private modules: crypt-io
 # ships no SHA-1 by design and the owner's codec library has no base64
 # (dev/ROADMAP.md, dependency wiring).

@@ -115,12 +115,25 @@ pub mod frame;
 mod handshake;
 mod head;
 mod keys;
+mod policy;
 mod sha1;
 
 pub use close::{CloseCode, CloseFrame};
 pub use conn::{Connection, Event, Limits, Role, State};
 pub use error::{HandshakeError, WsError};
-pub use handshake::{AcceptKey, ClientHandshake, ServerHandshake, accept_key};
+pub use handshake::{
+    AcceptKey, ClientHandshake, HeadReader, ServerHandshake, Verified, accept_key,
+};
+pub use policy::{AcceptPolicy, Accepted, Acceptor, Decision, OriginPolicy, accept};
+
+/// The crate version, as in `Cargo.toml`.
+///
+/// # Examples
+///
+/// ```
+/// assert!(ws_net::VERSION.starts_with("0."));
+/// ```
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // The README's and the API reference's examples run as doctests, so their
 // claims stay true.

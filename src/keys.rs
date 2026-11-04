@@ -3,13 +3,12 @@
 //!
 //! Keys come from SHA-1 in counter mode over a 32-byte secret seed: each
 //! digest of `seed || counter` yields five masking keys. With `std`, the
-//! seed is drawn from the operating system's random source through the
-//! standard library's `RandomState` (whose SipHash keys are seeded from the
-//! OS random number generator), mixed with the clock. Without `std`, the
-//! caller supplies the seed. The purpose of masking is that a peer cannot
-//! predict the keys of frames it has not seen; it is not encryption. This
-//! generator moves to the owner's random-number library once that library
-//! is published (see `dev/ROADMAP.md`).
+//! seed (and the handshake nonce) is drawn from the operating system's
+//! cryptographic random source through `mod-rand`'s OS tier (`getrandom`,
+//! `getentropy`, `BCryptGenRandom`, or `/dev/urandom`), which fails rather
+//! than fall back to a weaker source. Without `std`, the caller supplies
+//! the seed. The purpose of masking is that a peer cannot predict the keys
+//! of frames it has not seen; it is not encryption.
 
 use crate::sha1::Sha1;
 
@@ -50,26 +49,13 @@ impl MaskGen {
     }
 }
 
-/// A 32-byte seed from the operating system's random source.
+/// A 32-byte seed from the operating system's cryptographic random
+/// source, or `None` when that source fails.
 #[cfg(feature = "std")]
-pub(crate) fn os_seed() -> [u8; 32] {
-    use std::{
-        collections::hash_map::RandomState,
-        hash::{BuildHasher, Hasher},
-        time::{SystemTime, UNIX_EPOCH},
-    };
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+pub(crate) fn os_seed() -> Option<[u8; 32]> {
     let mut seed = [0u8; 32];
-    for (i, chunk) in seed.chunks_exact_mut(8).enumerate() {
-        // Every `RandomState::new` has fresh keys derived from the OS RNG.
-        let mut h = RandomState::new().build_hasher();
-        h.write_usize(i);
-        h.write_u128(nanos);
-        chunk.copy_from_slice(&h.finish().to_le_bytes());
-    }
-    seed
+    mod_rand::tier3::fill_bytes(&mut seed).ok()?;
+    Some(seed)
 }
 
 #[cfg(test)]
@@ -97,6 +83,8 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn test_os_seeds_differ() {
-        assert_ne!(os_seed(), os_seed());
+        let (a, b) = (os_seed().unwrap(), os_seed().unwrap());
+        assert_ne!(a, b);
+        assert_ne!(a, [0; 32]);
     }
 }

@@ -70,6 +70,39 @@ jobs:
       - name: Package
         run: cargo package --allow-dirty
 
+  autobahn:
+    name: Autobahn TestSuite (both roles)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the test peers
+        run: cargo build --release --example autobahn_server --example autobahn_client
+      - name: Pull the suite
+        run: docker pull crossbario/autobahn-testsuite:25.10.1
+      - name: Server role (fuzzingclient)
+        run: |
+          mkdir -p autobahn/reports
+          ./target/release/examples/autobahn_server 127.0.0.1:9001 &
+          sleep 2
+          docker run --rm --net=host -v "$PWD/autobahn:/config" -v "$PWD/autobahn/reports:/reports"             crossbario/autobahn-testsuite:25.10.1 wstest -m fuzzingclient -s /config/fuzzingclient.json
+          python3 autobahn/check.py autobahn/reports/servers/index.json
+      - name: Client role (fuzzingserver)
+        run: |
+          docker run -d --name fuzzingserver --net=host -v "$PWD/autobahn:/config" -v "$PWD/autobahn/reports:/reports"             crossbario/autobahn-testsuite:25.10.1 wstest -m fuzzingserver -s /config/fuzzingserver.json
+          for i in $(seq 1 30); do (echo > /dev/tcp/127.0.0.1/9002) 2>/dev/null && break; sleep 1; done
+          ./target/release/examples/autobahn_client 127.0.0.1:9002
+          docker stop fuzzingserver
+          python3 autobahn/check.py autobahn/reports/clients/index.json
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autobahn-reports
+          path: autobahn/reports/
+
   security:
     name: Security (audit + deny)
     runs-on: ubuntu-latest

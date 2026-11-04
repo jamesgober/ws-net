@@ -209,6 +209,27 @@ impl FrameHeader {
         self
     }
 
+    /// Sets the RSV1-3 bits (the low three bits of `rsv`), for an extension
+    /// that defines them. A value above 7 is refused by
+    /// [`encode`](Self::encode) with [`WsError::ReservedBits`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{WsError, frame::{FrameHeader, Opcode}};
+    ///
+    /// let mut out = Vec::new();
+    /// FrameHeader::new(Opcode::Text, true, 0).with_rsv(0b100).encode(&mut out)?;
+    /// assert_eq!(out, [0xC1, 0x00]); // FIN, RSV1, text
+    /// assert_eq!(FrameHeader::new(Opcode::Text, true, 0).with_rsv(8).encode(&mut out), Err(WsError::ReservedBits));
+    /// # Ok::<(), WsError>(())
+    /// ```
+    #[must_use]
+    pub const fn with_rsv(mut self, rsv: u8) -> Self {
+        self.rsv = rsv;
+        self
+    }
+
     /// Decodes a header from the start of `bytes`: `Ok(None)` if more bytes
     /// are needed, otherwise the header and its length in bytes (2 to 14).
     ///

@@ -596,7 +596,9 @@ impl ServerHandshake {
     ) -> Result<Connection, HandshakeError> {
         let decision = policy.check(self)?;
         self.write_response(decision.protocol, out)?;
-        let conn = Connection::server().with_limits(policy.limits);
+        let conn = Connection::server()
+            .with_limits(policy.limits)
+            .with_extensions(decision.extensions);
         Ok(match policy.keepalive {
             Some(k) => conn.with_keepalive(k),
             None => conn,

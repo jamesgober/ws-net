@@ -37,6 +37,9 @@ jobs:
       - name: ws-net against tungstenite
         shell: bash
         run: cd bench-compare && cargo bench --bench compare
+      - name: End to end on net-io against tungstenite
+        shell: bash
+        run: cd interop/net-io && E2E_SECS=5 cargo run --release --example e2e | tee ../../e2e.md
       - name: Summary
         shell: bash
         run: |
@@ -46,6 +49,9 @@ jobs:
             echo
             echo "## ${{ matrix.os }}: ws-net against tungstenite 0.30.0"
             python3 bench-compare/summary.py bench-compare/target/criterion
+            echo
+            echo "## ${{ matrix.os }}: end to end (echo round trips, messages per second)"
+            cat e2e.md
           } | tee summary.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:

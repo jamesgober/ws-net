@@ -982,7 +982,7 @@ impl Connection {
     }
 
     /// Sends a text message (split into frames of at most
-    /// [`Limits::max_frame`] bytes when larger).
+    /// [`Limits::send_frame`] bytes when larger).
     ///
     /// # Errors
     ///

@@ -92,9 +92,10 @@ Exit: Autobahn strict pass, fuzz 24 hours clean, soak 4 hours, every threat test
 
 ## v0.8.0 - Alpha
 - [x] The tls-net example and test (moved from 0.7): ws-net over tls-net sessions in memory, the close order (ws-net Close, TLS close_notify, TCP close); `interop/tls/`, run in CI.
-- [ ] End-to-end benchmark over net-io's driver (moved from 0.7).
+- [x] End-to-end benchmark over net-io's driver (moved from 0.7): `interop/net-io/examples/e2e.rs`, ws-net on net-io's reactor and blocking pool against tungstenite 0.30.0 on `std::net`, the same client for all, in the hosted benchmark workflow. Payloads stop at 1 KiB until net-io reuses output buffers (below); the larger rows join then.
+- [x] `interop/net-io/`: ws-net as a net-io `Session` on both drivers, end to end over loopback (every length class, 48 clients at once, Pings, the close order, a 403 refusal, a vanished peer, net-io's idle timeout as Close 1001), run in CI on three platforms.
 - [ ] Real consumers end to end: LexerSketch Studio with keepalive; serve-net's WebSocket upgrade route; a gateway consumer using the policy, counters, wipe, and close-on-revocation contract.
-- [ ] Socket-level soak with net-io.
+- [ ] Socket-level soak with net-io: written (`interop/net-io/tests/soak.rs`); blocked on net-io. In net-io 0.6.0 a session reply larger than one output buffer allocates new buffers on every flush and never reuses them: the heap grows without bound, and with the default buffer budget the server live-locks after a few seconds. Reported to net-io with a reproduction; ws-net needs no change (D-044).
 - [x] `docs/ARCHITECTURE.md`, `docs/PLATFORM-NOTES.md`.
 
 Exit: two consumers end to end with no open P0 or P1 defect; API changes from feedback recorded in the decision log.

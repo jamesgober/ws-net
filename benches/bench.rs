@@ -125,6 +125,7 @@ fn bench_send(c: &mut Criterion) {
             black_box(client.output().len())
         })
     });
+    #[cfg(feature = "std")]
     group.bench_function("client_masked_os", |b| {
         b.iter(|| {
             let mut client = Connection::client();

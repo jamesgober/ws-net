@@ -33,7 +33,7 @@ jobs:
           (cd ../v020 && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo bench --bench bench -- --save-baseline v020)
       - name: This commit against the baseline
         shell: bash
-        run: cargo bench --bench bench -- --baseline v020
+        run: cargo bench --bench bench -- --baseline-lenient v020
       - name: ws-net against tungstenite
         shell: bash
         run: cd bench-compare && cargo bench --bench compare

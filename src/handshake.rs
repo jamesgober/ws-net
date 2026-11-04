@@ -18,7 +18,10 @@ use alloc::{
 };
 use core::fmt;
 
-use parse_net::{list::contains_token, text::is_token};
+use parse_net::{
+    list::contains_token,
+    text::{is_token, trim_ows},
+};
 
 use crate::{
     base64,
@@ -111,11 +114,6 @@ fn list_has(value: &[u8], token: &[u8]) -> bool {
     contains_token([value], token)
 }
 
-/// Text from bytes already checked to be visible ASCII.
-fn ascii(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
 /// A validated opening request, ready to be accepted.
 ///
 /// It carries what a server decides policy on: the [`target`](Self::target)
@@ -146,15 +144,29 @@ fn ascii(bytes: &[u8]) -> String {
 /// assert!(response.starts_with(b"HTTP/1.1 101 Switching Protocols\r\n"));
 /// # Ok::<(), ws_net::HandshakeError>(())
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ServerHandshake {
     accept: AcceptKey,
-    target: String,
-    host: String,
-    origin: Option<String>,
-    protocols: Vec<String>,
-    /// The offered extensions, every field joined with ", ", validated.
-    extensions: String,
+    /// One allocation for everything kept: the target, `Host`, `Origin`,
+    /// the offered protocols joined by `,`, and the offered extensions
+    /// joined by `, `, in that order.
+    buf: String,
+    /// Where each part of `buf` ends: target, host, origin, protocols,
+    /// extensions.
+    ends: [usize; 5],
+    has_origin: bool,
+}
+
+impl fmt::Debug for ServerHandshake {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerHandshake")
+            .field("target", &self.target())
+            .field("host", &self.host())
+            .field("origin", &self.origin())
+            .field("protocols", &self.protocols().collect::<Vec<_>>())
+            .field("extensions", &self.part(4))
+            .finish_non_exhaustive()
+    }
 }
 
 /// Whether `name` is a field the handshake writes itself, so a caller may
@@ -293,8 +305,11 @@ impl ServerHandshake {
         let (mut keys, mut key): (usize, &[u8]) = (0, &[]);
         let (mut versions, mut version_ok) = (0usize, false);
         let mut body = false;
-        let mut protocols = Vec::new();
-        let mut extensions = String::new();
+        // Borrowed until the record is built, so it takes one allocation.
+        let mut protocols: [&[u8]; Self::MAX_PROTOCOLS] = [&[]; Self::MAX_PROTOCOLS];
+        let mut protocol_count = 0usize;
+        let mut extensions: [&[u8]; extension::MAX_OFFERS] = [&[]; extension::MAX_OFFERS];
+        let mut extension_fields = 0usize;
         let mut offers = 0usize;
         for (name, value) in headers {
             if name.eq_ignore_ascii_case("host") {
@@ -314,16 +329,15 @@ impl ServerHandshake {
                 origins += 1;
                 origin = value;
             } else if name.eq_ignore_ascii_case("sec-websocket-extensions") {
-                offers += extension::validate(value, extension::MAX_OFFERS - offers)?;
-                if offers > 0
-                    && !value
-                        .iter()
-                        .all(|b| *b == b' ' || *b == b'\t' || *b == b',')
-                {
-                    if !extensions.is_empty() {
-                        extensions.push_str(", ");
+                // Each field with an offer holds at least one, so at most
+                // MAX_OFFERS fields are kept.
+                let n = extension::validate(value, extension::MAX_OFFERS - offers)?;
+                if n > 0 {
+                    offers += n;
+                    if let Some(slot) = extensions.get_mut(extension_fields) {
+                        *slot = trim_ows(value);
+                        extension_fields += 1;
                     }
-                    extensions.push_str(&ascii(value));
                 }
             } else if name.eq_ignore_ascii_case("transfer-encoding") {
                 body = true;
@@ -335,10 +349,14 @@ impl ServerHandshake {
                 let offered =
                     parse_net::list(value).map_err(|_| HandshakeError::InvalidProtocol)?;
                 for p in offered.iter() {
-                    if !is_token(p) || protocols.len() == Self::MAX_PROTOCOLS {
+                    let Some(slot) = protocols.get_mut(protocol_count) else {
+                        return Err(HandshakeError::InvalidProtocol);
+                    };
+                    if !is_token(p) {
                         return Err(HandshakeError::InvalidProtocol);
                     }
-                    protocols.push(ascii(p));
+                    *slot = p;
+                    protocol_count += 1;
                 }
             }
         }
@@ -369,13 +387,48 @@ impl ServerHandshake {
         if origins > 1 || (origins == 1 && !is_visible(origin)) {
             return Err(HandshakeError::InvalidOrigin);
         }
+        let protocols = protocols.get(..protocol_count).unwrap_or(&[]);
+        let extensions = extensions.get(..extension_fields).unwrap_or(&[]);
+        let origin = if origins == 1 { origin } else { &[] };
+        let joined = |parts: &[&[u8]], sep: usize| {
+            parts.iter().map(|p| p.len()).sum::<usize>() + sep * parts.len().saturating_sub(1)
+        };
+        let len =
+            target.len() + host.len() + origin.len() + joined(protocols, 1) + joined(extensions, 2);
+        let mut buf = String::with_capacity(len);
+        let mut ends = [0usize; 5];
+        let push = |bytes: &[u8], buf: &mut String| -> Result<(), HandshakeError> {
+            // Every part was checked to be ASCII (visible, tokens, or the
+            // extension grammar), so this never fails.
+            let text = core::str::from_utf8(bytes).map_err(|_| HandshakeError::MalformedHead)?;
+            buf.push_str(text);
+            Ok(())
+        };
+        push(target.as_bytes(), &mut buf)?;
+        ends[0] = buf.len();
+        push(host, &mut buf)?;
+        ends[1] = buf.len();
+        push(origin, &mut buf)?;
+        ends[2] = buf.len();
+        for (i, p) in protocols.iter().enumerate() {
+            if i > 0 {
+                buf.push(',');
+            }
+            push(p, &mut buf)?;
+        }
+        ends[3] = buf.len();
+        for (i, e) in extensions.iter().enumerate() {
+            if i > 0 {
+                buf.push_str(", ");
+            }
+            push(e, &mut buf)?;
+        }
+        ends[4] = buf.len();
         Ok(Self {
             accept: accept_key(key),
-            target: target.to_string(),
-            host: ascii(host),
-            origin: (origins == 1).then(|| ascii(origin)),
-            protocols,
-            extensions,
+            buf,
+            ends,
+            has_origin: origins == 1,
         })
     }
 
@@ -422,6 +475,20 @@ impl ServerHandshake {
         Ok(Some((handshake, head.len)))
     }
 
+    /// Part `i` of the record (see `ends`).
+    fn part(&self, i: usize) -> &str {
+        let start = match i {
+            0 => 0,
+            _ => self.ends.get(i - 1).copied().unwrap_or(0),
+        };
+        let end = self.ends.get(i).copied().unwrap_or(start);
+        self.buf.get(start..end).unwrap_or("")
+    }
+
+    fn offered(&self, protocol: &str) -> bool {
+        self.protocols().any(|offered| offered == protocol)
+    }
+
     /// The `Sec-WebSocket-Accept` value for this request.
     ///
     /// # Examples
@@ -439,7 +506,7 @@ impl ServerHandshake {
     /// See [`from_request`](Self::from_request).
     #[must_use]
     pub fn target(&self) -> &str {
-        &self.target
+        self.part(0)
     }
 
     /// The `Host` field: compare it with this server's own authority before
@@ -450,7 +517,7 @@ impl ServerHandshake {
     /// See [`from_request`](Self::from_request).
     #[must_use]
     pub fn host(&self) -> &str {
-        &self.host
+        self.part(1)
     }
 
     /// The `Origin` field, if the client sent one (browsers always do).
@@ -462,7 +529,7 @@ impl ServerHandshake {
     /// See [`ServerHandshake`].
     #[must_use]
     pub fn origin(&self) -> Option<&str> {
-        self.origin.as_deref()
+        self.has_origin.then(|| self.part(2))
     }
 
     /// The subprotocols the client offered, in its order of preference.
@@ -471,7 +538,7 @@ impl ServerHandshake {
     ///
     /// See [`ServerHandshake`].
     pub fn protocols(&self) -> impl Iterator<Item = &str> {
-        self.protocols.iter().map(String::as_str)
+        self.part(3).split(',').filter(|p| !p.is_empty())
     }
 
     /// The first protocol of the server's `preference` list that the client
@@ -494,10 +561,7 @@ impl ServerHandshake {
     /// ```
     #[must_use]
     pub fn select_protocol<'p>(&self, preference: &[&'p str]) -> Option<&'p str> {
-        preference
-            .iter()
-            .copied()
-            .find(|p| self.protocols.iter().any(|offered| offered == p))
+        preference.iter().copied().find(|p| self.offered(p))
     }
 
     /// The extensions the client offered, in its order, parsed. They were
@@ -518,7 +582,7 @@ impl ServerHandshake {
     /// # Ok::<(), ws_net::HandshakeError>(())
     /// ```
     pub fn extensions(&self) -> Offers<'_> {
-        extension::parse(self.extensions.as_bytes())
+        extension::parse(self.part(4).as_bytes())
     }
 
     /// Writes the `101` with the selected `protocol`, the negotiated
@@ -611,7 +675,7 @@ impl ServerHandshake {
         extensions: &Negotiated,
     ) -> Result<ResponseFields<'s>, HandshakeError> {
         if let Some(p) = protocol {
-            if !self.protocols.iter().any(|offered| offered == p) {
+            if !self.offered(p) {
                 return Err(HandshakeError::InvalidProtocol);
             }
         }
@@ -656,7 +720,7 @@ impl ServerHandshake {
         out: &mut Vec<u8>,
     ) -> Result<(), HandshakeError> {
         if let Some(p) = protocol {
-            if !self.protocols.iter().any(|offered| offered == p) {
+            if !self.offered(p) {
                 return Err(HandshakeError::InvalidProtocol);
             }
         }

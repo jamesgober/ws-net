@@ -110,6 +110,12 @@ pub enum WsError {
     /// message holds its budget). A Close with 1008 was queued; flush it,
     /// then close the transport.
     MessageTimeout,
+    /// Memory for an incoming message could not be allocated: the system
+    /// is out of memory (the message itself was within its budget). A
+    /// Close with 1011 (Internal Error) was queued instead of the process
+    /// aborting; flush it, then close the transport, and lower the budgets
+    /// or the number of connections.
+    AllocationFailed,
 }
 
 impl WsError {
@@ -149,6 +155,7 @@ impl WsError {
             Self::IdleTimeout => Some(CloseCode::GOING_AWAY),
             Self::CloseTimeout => Some(CloseCode::ABNORMAL),
             Self::MessageTimeout => Some(CloseCode::POLICY_VIOLATION),
+            Self::AllocationFailed => Some(CloseCode::INTERNAL_ERROR),
             Self::InvalidArgument(_)
             | Self::InvalidState(_)
             | Self::RandomUnavailable
@@ -182,6 +189,7 @@ impl fmt::Display for WsError {
             Self::IdleTimeout => "no input within the idle timeout",
             Self::CloseTimeout => "the peer did not answer the Close within the close timeout",
             Self::MessageTimeout => "a message stayed incomplete past the message timeout",
+            Self::AllocationFailed => "memory for an incoming message could not be allocated",
         };
         f.write_str(msg)
     }

@@ -1077,10 +1077,10 @@ impl Connection {
 /// usual but never past the message budget (the budget was checked against
 /// the header, so `len + need` fits it), so a message's buffer holds at
 /// most `max_message` bytes.
-fn grow(msg: &mut Vec<u8>, need: usize, max_message: u64) {
+fn grow(msg: &mut Vec<u8>, need: usize, max_message: u64) -> Result<(), WsError> {
     let len = msg.len();
     if msg.capacity() - len >= need {
-        return;
+        return Ok(());
     }
     let budget = usize::try_from(max_message).unwrap_or(usize::MAX);
     let wanted = len.saturating_add(need);
@@ -1089,14 +1089,20 @@ fn grow(msg: &mut Vec<u8>, need: usize, max_message: u64) {
         .saturating_mul(2)
         .max(wanted)
         .min(budget.max(wanted));
-    msg.reserve_exact(target - len);
+    // Allocation failure fails the connection (1011) instead of aborting
+    // the process; a smaller exact request is tried first.
+    if msg.try_reserve_exact(target - len).is_err() {
+        msg.try_reserve_exact(need)
+            .map_err(|_| WsError::AllocationFailed)?;
+    }
+    Ok(())
 }
 
 /// [`grow`] for a text message's `String`.
-fn grow_text(text: &mut String, need: usize, max_message: u64) {
+fn grow_text(text: &mut String, need: usize, max_message: u64) -> Result<(), WsError> {
     let len = text.len();
     if text.capacity() - len >= need {
-        return;
+        return Ok(());
     }
     let budget = usize::try_from(max_message).unwrap_or(usize::MAX);
     let wanted = len.saturating_add(need);
@@ -1105,7 +1111,13 @@ fn grow_text(text: &mut String, need: usize, max_message: u64) {
         .saturating_mul(2)
         .max(wanted)
         .min(budget.max(wanted));
-    text.reserve_exact(target - len);
+    // Allocation failure fails the connection (1011) instead of aborting
+    // the process; a smaller exact request is tried first.
+    if text.try_reserve_exact(target - len).is_err() {
+        text.try_reserve_exact(need)
+            .map_err(|_| WsError::AllocationFailed)?;
+    }
+    Ok(())
 }
 
 /// The receive state machine, over the two halves so that a [`Sender`] can
@@ -1158,11 +1170,18 @@ fn poll_inner<'r>(
                     }
                     match f.kind {
                         Kind::Binary => {
-                            grow(&mut reader.msg, chunk.len(), limits.max_message());
+                            if let Err(e) = grow(&mut reader.msg, chunk.len(), limits.max_message())
+                            {
+                                return Err(writer.fail(e));
+                            }
                             reader.msg.extend_from_slice(chunk);
                         }
                         Kind::Text => {
-                            grow_text(&mut reader.text, chunk.len(), limits.max_message());
+                            let grown =
+                                grow_text(&mut reader.text, chunk.len(), limits.max_message());
+                            if let Err(e) = grown {
+                                return Err(writer.fail(e));
+                            }
                             let chunk = reader.input.get(start..start + n).unwrap_or(&[]);
                             let pushed = Reader::push_text(
                                 &mut reader.text,
@@ -1316,9 +1335,12 @@ fn poll_inner<'r>(
             // claim, and the budgets may have been lifted.
             let ahead = header.payload_len.min(RESERVE_CAP);
             let ahead = usize::try_from(ahead).unwrap_or(0);
-            match kind {
+            let grown = match kind {
                 Kind::Binary => grow(&mut reader.msg, ahead, limits.max_message()),
                 Kind::Text => grow_text(&mut reader.text, ahead, limits.max_message()),
+            };
+            if let Err(e) = grown {
+                return Err(writer.fail(e));
             }
             let streaming = Streaming {
                 kind,

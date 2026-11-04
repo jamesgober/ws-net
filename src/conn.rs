@@ -418,10 +418,13 @@ impl Writer {
         let max = usize::try_from(limits.send_frame())
             .unwrap_or(usize::MAX)
             .max(1);
-        self.check_data_room(self.message_size(data.len(), max))?;
         if data.len() <= max {
-            return self.frame(first, fin, data);
+            // The common case, one frame: its size is the budget check.
+            self.check_data_room(self.frame_size(data.len()))?;
+            self.pong_at = None;
+            return self.raw_frame(first, fin, data);
         }
+        self.check_data_room(self.message_size(data.len(), max))?;
         let count = data.len().div_ceil(max);
         for (i, piece) in data.chunks(max).enumerate() {
             let opcode = if i == 0 { first } else { Opcode::Continuation };
@@ -552,7 +555,6 @@ impl Writer {
             header[n..n + 4].copy_from_slice(&k);
             n += 4;
         }
-        self.out.reserve(n + len);
         self.out.extend_from_slice(header.get(..n).unwrap_or(&[]));
         let start = self.out.len();
         self.out.extend_from_slice(payload);

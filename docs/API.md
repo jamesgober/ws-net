@@ -1,7 +1,7 @@
 # ws-net - API Reference
 
 > Complete reference for every public item in `ws-net`, with examples.
-> **Status: pre-1.0 (0.6.0), design locked.** Every item of the 1.0 surface
+> **Status: pre-1.0 (0.7.0), design locked.** Every item of the 1.0 surface
 > is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
 > lands in; items marked shipped are documented in full below. The surface is
 > frozen at `1.0.0`, after LexerSketch Studio ships on it. See
@@ -102,10 +102,10 @@ async runtime, a test harness, or memory.
 
 ```toml
 [dependencies]
-ws-net = "0.6"
+ws-net = "0.7"
 
 # no_std (alloc only)
-ws-net = { version = "0.6", default-features = false }
+ws-net = { version = "0.7", default-features = false }
 ```
 
 ## Quick start

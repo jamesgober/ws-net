@@ -15,7 +15,9 @@ use std::{io, net::TcpListener, thread};
 use ws_net::{AcceptPolicy, Limits, OriginPolicy, blocking};
 
 fn main() -> io::Result<()> {
-    let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:9001".into());
+    let addr = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:9001".into());
     let listener = TcpListener::bind(&addr)?;
     println!("autobahn echo server on ws://{}/", listener.local_addr()?);
     let limits = Limits::new()

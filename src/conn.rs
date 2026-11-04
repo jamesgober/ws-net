@@ -7,11 +7,11 @@ use core::{fmt, hint::black_box};
 use crate::{
     close::{CloseCode, CloseFrame},
     error::WsError,
+    extension::Negotiated,
     frame::{FrameHeader, Opcode, apply_mask},
     keepalive::{Clock, Keepalive, Millis, Tick, UNSET, due},
     keys::MaskGen,
     limits::Limits,
-    extension::Negotiated,
     message::{Message, MessageKind, Stats},
     prepared::{PreparedMessage, SendOptions},
 };

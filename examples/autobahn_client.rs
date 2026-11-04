@@ -16,7 +16,10 @@ use ws_net::{ClientHandshake, Connection, HeadReader, Limits, Message, blocking}
 const AGENT: &str = "ws-net";
 
 /// Connects to `path` with large budgets and returns the adapter.
-fn open(addr: &str, path: &str) -> Result<blocking::WebSocket<TcpStream>, Box<dyn std::error::Error>> {
+fn open(
+    addr: &str,
+    path: &str,
+) -> Result<blocking::WebSocket<TcpStream>, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(addr)?;
     let _ = stream.set_nodelay(true);
     let handshake = ClientHandshake::try_new()?;
@@ -38,7 +41,11 @@ fn open(addr: &str, path: &str) -> Result<blocking::WebSocket<TcpStream>, Box<dy
                 .with_max_message(64 << 20)
                 .with_max_output(u64::MAX);
             let conn = Connection::try_client()?.with_limits(limits);
-            return Ok(blocking::WebSocket::from_upgraded(stream, &buf[len..], conn));
+            return Ok(blocking::WebSocket::from_upgraded(
+                stream,
+                &buf[len..],
+                conn,
+            ));
         }
     }
 }
@@ -53,7 +60,9 @@ fn echo(mut ws: blocking::WebSocket<TcpStream>) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:9002".into());
+    let addr = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:9002".into());
     let mut ws = open(&addr, "/getCaseCount")?;
     let count: u32 = match ws.read()? {
         Message::Text(text) => text.trim().parse()?,

@@ -1,7 +1,7 @@
 # ws-net - API Reference
 
 > Complete reference for every public item in `ws-net`, with examples.
-> **Status: pre-1.0 (0.4.0), design locked.** Every item of the 1.0 surface
+> **Status: pre-1.0 (0.5.0), design locked.** Every item of the 1.0 surface
 > is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
 > lands in; items marked shipped are documented in full below. The surface is
 > frozen at `1.0.0`, after LexerSketch Studio ships on it. See
@@ -102,10 +102,10 @@ async runtime, a test harness, or memory.
 
 ```toml
 [dependencies]
-ws-net = "0.4"
+ws-net = "0.5"
 
 # no_std (alloc only)
-ws-net = { version = "0.4", default-features = false }
+ws-net = { version = "0.5", default-features = false }
 ```
 
 ## Quick start
@@ -405,6 +405,7 @@ machine. All methods are synchronous and never block.
 | `Connection::try_client() -> Result<Connection, WsError>` | As `client`, returning `WsError::RandomUnavailable` when the OS source fails. Feature `std`. |
 | `Connection::client_with_seed(seed: [u8; 32]) -> Connection` | The connecting end, masking keys derived from a 32-byte secret seed. The seed must be unpredictable to the peer (RFC 6455 section 5.3); a fixed seed is for tests. |
 | `Connection::with_limits(self, limits: Limits) -> Connection` | Replaces the [budgets](#limits). |
+| `with_extensions(self, negotiated: Negotiated) -> Connection`, `negotiated(&self) -> &Negotiated` | What the handshake negotiated; set by `accept`, `ServerHandshake::accept`, and `ClientHandshake::connection` (always empty until permessage-deflate). |
 
 ```rust
 use ws_net::{Connection, Limits, Role};
@@ -614,6 +615,7 @@ assert_eq!(conn.stats().bytes_out, 1004);
 | `Sender::{send_text, send_binary, send_ping, send_pong, close, send_prepared}` | The `Connection` rules and budget. |
 | `detach_message(&mut self, into: &mut Vec<u8>) -> Option<MessageKind>` | Right after a `Text` or `Binary` event, moves its bytes into `into`: a buffer swap for reassembled messages (no copy), one copy for single-frame ones. `None` otherwise, or after more input was fed. |
 | `send(&mut self, message: &Message) -> Result<(), WsError>` | Sends an owned [`Message`](#message-and-messagekind). |
+| `send_text_with(&mut self, text, options: SendOptions)`, `send_binary_with(&mut self, data, options)` | Per-message [`SendOptions`](#preparedmessage): `uncompressed()` for messages carrying secrets. No effect on the wire until compression exists. |
 | `send_prepared(&mut self, message: &PreparedMessage) -> Result<(), WsError>` | Appends a [prepared message](#preparedmessage); server role only. |
 
 ```rust
@@ -707,6 +709,11 @@ pub struct PreparedMessage { /* private */ }
 | `PreparedMessage::text(text: &str)`, `binary(data: &[u8])` | Unmasked frames encoded once, split at the default send-frame size. |
 | `text_with(text, limits: &Limits)`, `binary_with(data, limits)` | Split at `limits.send_frame()`. |
 | `as_bytes(&self) -> &[u8]`, `len`, `is_empty`, `payload_len` | Inspection. |
+
+`SendOptions` (`new`, `uncompressed`, `compressed`, `is_uncompressed`;
+`#[non_exhaustive]`, `Copy`, `Default`) chooses compression per message;
+until permessage-deflate exists every message goes uncompressed, and code
+that asks for `uncompressed()` keeps that guarantee afterwards.
 
 `Connection::send_prepared` appends the frames with one copy. It is refused
 for a client (frames must be masked with fresh keys), after a Close, during
@@ -1209,6 +1216,7 @@ The client side: the request to send, and the check of the response.
 | `with_origin(self, origin: &str) -> ClientHandshake` | Sends an `Origin` field, as browsers do. |
 | `with_header(self, name: &str, value: &[u8]) -> ClientHandshake` | An extra request header (`Authorization`, `Cookie`), validated at write; reserved names refused. |
 | `verify_full(&self, status, headers) -> Result<Verified<'_>, HandshakeError>` | As `verify`, returning the protocol and the negotiated extensions. |
+| `connection(&self, verified: &Verified<'_>) -> Connection` (feature `std`), `connection_with_seed(&self, verified, seed: [u8; 32]) -> Connection` | The client connection for a verified response, with its extensions. `Verified::none()` builds one by hand. |
 | `key(&self) -> &str` | The `Sec-WebSocket-Key` sent. |
 | `write_request(&self, host: &str, path: &str, out: &mut Vec<u8>) -> Result<(), HandshakeError>` | Appends the request. `InvalidRequest` for an empty or non-visible-ASCII host, path, or origin, or a path without a leading `/`; `InvalidProtocol` for a non-token protocol. Nothing is written on error. |
 | `verify(&self, status: u16, headers: impl IntoIterator<Item = (&str, &[u8])>) -> Result<Option<&str>, HandshakeError>` | Checks a response an HTTP layer parsed; returns the selected subprotocol. |
@@ -1456,6 +1464,7 @@ pub struct FrameHeader {
 |---|---|
 | `FrameHeader::new(opcode: Opcode, fin: bool, payload_len: u64) -> FrameHeader` | No RSV bits, no mask. |
 | `with_mask(self, key: [u8; 4]) -> FrameHeader` | Sets the masking key. |
+| `with_rsv(self, rsv: u8) -> FrameHeader` | Sets RSV1-3 (low three bits), for an extension that defines them; above 7 is refused at encode. |
 | `decode(bytes: &[u8]) -> Result<Option<(FrameHeader, usize)>, WsError>` | Decodes a header from the front of `bytes`: `Ok(None)` if more bytes are needed, else the header and its length (2 to 14). |
 | `encoded_len(&self) -> usize` | The encoded length. |
 | `encode(&self, out: &mut Vec<u8>) -> Result<(), WsError>` | Appends the header, length in its shortest encoding. |

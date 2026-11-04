@@ -993,7 +993,11 @@ impl ClientHandshake {
     /// assert_eq!(conn.role(), ws_net::Role::Client);
     /// ```
     #[must_use]
-    pub fn connection_with_seed(&self, verified: &Verified<'_>, seed: [u8; 32]) -> crate::Connection {
+    pub fn connection_with_seed(
+        &self,
+        verified: &Verified<'_>,
+        seed: [u8; 32],
+    ) -> crate::Connection {
         crate::Connection::client_with_seed(seed).with_extensions(verified.extensions)
     }
 

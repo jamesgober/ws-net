@@ -157,7 +157,7 @@ fed to ws-net. On close, flush ws-net's Close frame, then send TLS
 reporting-only: the caller produces it from a tls-net error; ws-net never
 sends it. `interop/tls/tests/tls_echo.rs` (an unpublished package, so
 rustls stays out of ws-net's dependency graph) runs a ws-net client and
-server through two tls-net 0.4 sessions in memory: the TLS handshake, the
+server through two tls-net 0.5 sessions in memory: the TLS handshake, the
 WebSocket handshake with `AcceptPolicy::with_secure(true)`, messages both
 ways, and this close order, checked step by step. CI runs it on Linux.
 

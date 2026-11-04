@@ -13,6 +13,48 @@
 
 ---
 
+## [0.6.0] - 2026-11-04
+
+Optimisation: measured against tungstenite 0.30.0 and against 0.2.0 on
+hosted Linux, macOS, and Windows runners, with every hot path rechecked.
+The numbers are in `docs/PERFORMANCE.md`.
+
+### Added
+
+- `WsError::AllocationFailed` (1011): reassembly memory is reserved with
+  `try_reserve_exact`, so allocator exhaustion fails the connection instead
+  of aborting the process.
+- `bench-compare/`: ws-net against tungstenite on the same bytes (not
+  published, not in ws-net's dependency graph), and a benchmark workflow
+  on hosted runners (`.github/workflows/bench.yml`).
+- Benchmark `send_100k/client_masked_os`; `docs/PERFORMANCE.md`.
+- Counting-allocator checks: one allocation per handshake; none for
+  fragmented messages, Ping floods, idle keepalive ticks, prepared sends,
+  or the Close echo.
+
+### Changed
+
+- A streamed text message is validated once per byte: a sequence cut at a
+  read boundary waits for the next read, and the message is assembled from
+  validated pieces, so delivering it no longer validates it again.
+  Receiving 1 MiB of text is about 50% faster than in 0.2.0.
+- `Connection::client` draws masking keys from the OS cryptographic source
+  in 1 KiB batches (256 keys), about 30 times cheaper per key than SHA-1
+  counter mode over an OS seed; `client_with_seed` keeps SHA-1 counter
+  mode. The batch is freed by `release_memory` and zeroed by `wipe`.
+- The server handshake record is one allocation (target, `Host`, `Origin`,
+  protocols, and extensions in one buffer).
+- The frame writer writes headers directly on the send path.
+- permessage-deflate moved out of 1.0 to 1.1: no first-party DEFLATE crate
+  exists.
+
+### Security
+
+- Allocation failure under memory pressure no longer aborts the process
+  (`AllocationFailed`, 1011).
+
+---
+
 ## [0.5.0] - 2026-11-04
 
 Feature complete, except permessage-deflate, which waits for a first-party
@@ -286,7 +328,8 @@ Initial scaffold and repository bootstrap. No domain logic yet: this release est
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/jamesgober/ws-net/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/ws-net/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jamesgober/ws-net/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamesgober/ws-net/compare/v0.2.0...v0.3.0

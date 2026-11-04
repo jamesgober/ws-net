@@ -97,10 +97,21 @@ impl SendOptions {
 /// }
 /// # Ok::<(), ws_net::WsError>(())
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PreparedMessage {
     frames: Vec<u8>,
     payload_len: usize,
+}
+
+/// Lengths only: a broadcast may carry what its recipients must not see in
+/// a log.
+impl core::fmt::Debug for PreparedMessage {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PreparedMessage")
+            .field("len", &self.frames.len())
+            .field("payload_len", &self.payload_len)
+            .finish()
+    }
 }
 
 impl PreparedMessage {

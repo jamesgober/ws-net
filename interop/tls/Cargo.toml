@@ -1,0 +1,19 @@
+# ws-net over tls-net (wss): an interoperability test, not published and
+# not part of ws-net's dependency graph. tls-net wraps rustls, the one
+# third-party dependency the stack accepts for TLS; it stays here, never in
+# ws-net. The certificates in data/ are tls-net's test CA and leaf (for the
+# name api.other.test): test material only.
+[package]
+name         = "ws-net-interop-tls"
+version      = "0.0.0"
+publish      = false
+edition      = "2024"
+rust-version = "1.85"
+license      = "Apache-2.0 OR MIT"
+
+[dependencies]
+ws-net  = { path = "../.." }
+tls-net = "0.4"
+
+# A standalone package, not a member of any workspace.
+[workspace]

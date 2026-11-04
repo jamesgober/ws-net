@@ -22,3 +22,5 @@ Cargo.lock
 /autobahn/reports/
 /bench-compare/target/
 /bench-compare/Cargo.lock
+/interop/tls/target/
+/interop/tls/Cargo.lock

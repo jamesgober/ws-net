@@ -91,11 +91,11 @@ Exit: NFR-4 (no allocation per message in steady state) and NFR-11 met; the comp
 Exit: Autobahn strict pass, fuzz 24 hours clean, soak 4 hours, every threat test passing.
 
 ## v0.8.0 - Alpha
-- [ ] The tls-net example and test (moved from 0.7): ws-net over a tls-net session, the close order (ws-net Close, TLS close_notify, TCP close).
+- [x] The tls-net example and test (moved from 0.7): ws-net over tls-net sessions in memory, the close order (ws-net Close, TLS close_notify, TCP close); `interop/tls/`, run in CI.
 - [ ] End-to-end benchmark over net-io's driver (moved from 0.7).
 - [ ] Real consumers end to end: LexerSketch Studio with keepalive; serve-net's WebSocket upgrade route; a gateway consumer using the policy, counters, wipe, and close-on-revocation contract.
 - [ ] Socket-level soak with net-io.
-- [ ] `docs/ARCHITECTURE.md`, `docs/PLATFORM-NOTES.md`.
+- [x] `docs/ARCHITECTURE.md`, `docs/PLATFORM-NOTES.md`.
 
 Exit: two consumers end to end with no open P0 or P1 defect; API changes from feedback recorded in the decision log.
 

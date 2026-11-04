@@ -93,6 +93,46 @@ impl CloseCode {
     pub const fn is_sendable(&self) -> bool {
         matches!(self.0, 1000..=1003 | 1007..=1014 | 3000..=4999)
     }
+
+    /// Whether the code is for private use by applications (4000-4999).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::CloseCode;
+    /// assert!(CloseCode::new(4001).is_private_use() && !CloseCode::new(3001).is_private_use());
+    /// ```
+    #[must_use]
+    pub const fn is_private_use(&self) -> bool {
+        matches!(self.0, 4000..=4999)
+    }
+
+    /// Whether the code is in the range registered with IANA for libraries,
+    /// frameworks, and applications (3000-3999).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(ws_net::CloseCode::new(3000).is_registered());
+    /// ```
+    #[must_use]
+    pub const fn is_registered(&self) -> bool {
+        matches!(self.0, 3000..=3999)
+    }
+
+    /// Whether the code only reports a condition and is never sent on the
+    /// wire: 1005 (no status), 1006 (abnormal closure), 1015 (TLS failure).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::CloseCode;
+    /// assert!(CloseCode::ABNORMAL.is_reporting_only() && !CloseCode::NORMAL.is_reporting_only());
+    /// ```
+    #[must_use]
+    pub const fn is_reporting_only(&self) -> bool {
+        matches!(self.0, 1005 | 1006 | 1015)
+    }
 }
 
 impl fmt::Display for CloseCode {

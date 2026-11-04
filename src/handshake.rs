@@ -23,6 +23,7 @@ use parse_net::{list::contains_token, text::is_token};
 use crate::{
     base64,
     error::HandshakeError,
+    extension::{self, Negotiated, Offers},
     head::{self, is_visible},
     sha1::Sha1,
 };
@@ -152,6 +153,34 @@ pub struct ServerHandshake {
     host: String,
     origin: Option<String>,
     protocols: Vec<String>,
+    /// The offered extensions, every field joined with ", ", validated.
+    extensions: String,
+}
+
+/// Whether `name` is a field the handshake writes itself, so a caller may
+/// not add it: `host`, `upgrade`, `connection`, any `sec-websocket-*`, and
+/// the body framing fields.
+fn reserved(name: &str) -> bool {
+    ["host", "upgrade", "connection", "content-length", "transfer-encoding", "origin"]
+        .iter()
+        .any(|r| name.eq_ignore_ascii_case(r))
+        || name
+            .get(..14)
+            .is_some_and(|p| p.eq_ignore_ascii_case("sec-websocket-"))
+}
+
+/// Checks an extra header: a token name that is not reserved, and a field
+/// value with no control bytes.
+fn check_extra(name: &str, value: &[u8]) -> Result<(), HandshakeError> {
+    if !is_token(name.as_bytes())
+        || reserved(name)
+        || parse_net::scan::check_field_value(value).is_err()
+        || value.first().is_some_and(|b| *b == b' ' || *b == b'\t')
+        || value.last().is_some_and(|b| *b == b' ' || *b == b'\t')
+    {
+        return Err(HandshakeError::InvalidRequest);
+    }
+    Ok(())
 }
 
 impl ServerHandshake {
@@ -176,6 +205,17 @@ impl ServerHandshake {
     /// assert_eq!(ws_net::ServerHandshake::MAX_PROTOCOLS, 64);
     /// ```
     pub const MAX_PROTOCOLS: usize = 64;
+
+    /// The most extension offers accepted from one request, over all its
+    /// `Sec-WebSocket-Extensions` fields; one more is
+    /// [`HandshakeError::InvalidExtensions`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ws_net::ServerHandshake::MAX_EXTENSION_OFFERS, 16);
+    /// ```
+    pub const MAX_EXTENSION_OFFERS: usize = extension::MAX_OFFERS;
 
     /// Validates a client's opening request (RFC 6455 section 4.2.1) from
     /// its method, request target, and header fields, as an HTTP layer
@@ -247,6 +287,8 @@ impl ServerHandshake {
         let (mut versions, mut version_ok) = (0usize, false);
         let mut body = false;
         let mut protocols = Vec::new();
+        let mut extensions = String::new();
+        let mut offers = 0usize;
         for (name, value) in headers {
             if name.eq_ignore_ascii_case("host") {
                 hosts += 1;
@@ -264,6 +306,14 @@ impl ServerHandshake {
             } else if name.eq_ignore_ascii_case("origin") {
                 origins += 1;
                 origin = value;
+            } else if name.eq_ignore_ascii_case("sec-websocket-extensions") {
+                offers += extension::validate(value, extension::MAX_OFFERS - offers)?;
+                if offers > 0 && !value.iter().all(|b| *b == b' ' || *b == b'\t' || *b == b',') {
+                    if !extensions.is_empty() {
+                        extensions.push_str(", ");
+                    }
+                    extensions.push_str(&ascii(value));
+                }
             } else if name.eq_ignore_ascii_case("transfer-encoding") {
                 body = true;
             } else if name.eq_ignore_ascii_case("content-length") {
@@ -314,6 +364,7 @@ impl ServerHandshake {
             host: ascii(host),
             origin: (origins == 1).then(|| ascii(origin)),
             protocols,
+            extensions,
         })
     }
 
@@ -438,6 +489,129 @@ impl ServerHandshake {
             .find(|p| self.protocols.iter().any(|offered| offered == p))
     }
 
+    /// The extensions the client offered, in its order, parsed. They were
+    /// validated when the handshake was built, so every item is `Ok`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::ServerHandshake;
+    ///
+    /// let h = ServerHandshake::from_request("GET", "/", [
+    ///     ("Host", &b"a"[..]), ("Upgrade", b"websocket"), ("Connection", b"Upgrade"),
+    ///     ("Sec-WebSocket-Version", b"13"), ("Sec-WebSocket-Key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+    ///     ("Sec-WebSocket-Extensions", b"permessage-deflate; client_max_window_bits"),
+    /// ])?;
+    /// let names: Vec<_> = h.extensions().filter_map(Result::ok).map(|o| o.name()).collect();
+    /// assert_eq!(names, ["permessage-deflate"]);
+    /// # Ok::<(), ws_net::HandshakeError>(())
+    /// ```
+    pub fn extensions(&self) -> Offers<'_> {
+        extension::parse(self.extensions.as_bytes())
+    }
+
+    /// Writes the `101` with the selected `protocol`, the negotiated
+    /// `extensions`, and `extra` response headers (a `Set-Cookie`, a
+    /// server name). Extra headers are validated: a token name that is not
+    /// one the handshake writes itself (`upgrade`, `connection`,
+    /// `sec-websocket-*`, ...), and a value with no control bytes and no
+    /// surrounding whitespace.
+    ///
+    /// # Errors
+    ///
+    /// [`HandshakeError::InvalidProtocol`] for a protocol that was not
+    /// offered; [`HandshakeError::InvalidRequest`] for a bad extra header.
+    /// Nothing is written then.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{HandshakeError, ServerHandshake, extension::Negotiated};
+    ///
+    /// let h = ServerHandshake::from_request("GET", "/", [
+    ///     ("Host", &b"a"[..]), ("Upgrade", b"websocket"), ("Connection", b"Upgrade"),
+    ///     ("Sec-WebSocket-Version", b"13"), ("Sec-WebSocket-Key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+    /// ])?;
+    /// let mut out = Vec::new();
+    /// h.write_response_with(None, &Negotiated::none(), &[("x-served-by", b"edge-1")], &mut out)?;
+    /// assert!(out.ends_with(b"x-served-by: edge-1\r\n\r\n"));
+    /// let bad = h.write_response_with(None, &Negotiated::none(), &[("Upgrade", b"h2c")], &mut out);
+    /// assert_eq!(bad, Err(HandshakeError::InvalidRequest));
+    /// # Ok::<(), HandshakeError>(())
+    /// ```
+    pub fn write_response_with(
+        &self,
+        protocol: Option<&str>,
+        extensions: &Negotiated,
+        extra: &[(&str, &[u8])],
+        out: &mut Vec<u8>,
+    ) -> Result<(), HandshakeError> {
+        for (name, value) in extra {
+            check_extra(name, value)?;
+        }
+        let _ = extensions;
+        self.write_response(protocol, out)?;
+        // Insert the extra fields before the blank line that ends the head.
+        let end = out.len() - 2;
+        let mut tail = Vec::new();
+        for (name, value) in extra {
+            tail.extend_from_slice(name.as_bytes());
+            tail.extend_from_slice(b": ");
+            tail.extend_from_slice(value);
+            tail.extend_from_slice(b"\r\n");
+        }
+        let _ = out.splice(end..end, tail);
+        Ok(())
+    }
+
+    /// The `101` response's header fields as `(name, value)` pairs, for an
+    /// HTTP layer that writes the status line itself (http-net's
+    /// `Response::switching_protocols`): `upgrade`, `connection`,
+    /// `sec-websocket-accept`, and `sec-websocket-protocol` when one is
+    /// selected.
+    ///
+    /// # Errors
+    ///
+    /// [`HandshakeError::InvalidProtocol`] for a protocol that was not
+    /// offered.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{ServerHandshake, extension::Negotiated};
+    ///
+    /// let h = ServerHandshake::from_request("GET", "/", [
+    ///     ("Host", &b"a"[..]), ("Upgrade", b"websocket"), ("Connection", b"Upgrade"),
+    ///     ("Sec-WebSocket-Version", b"13"), ("Sec-WebSocket-Key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+    ///     ("Sec-WebSocket-Protocol", b"chat"),
+    /// ])?;
+    /// let fields: Vec<_> = h.response_fields(Some("chat"), &Negotiated::none())?.collect();
+    /// assert_eq!(fields, [
+    ///     ("upgrade", &b"websocket"[..]),
+    ///     ("connection", b"upgrade"),
+    ///     ("sec-websocket-accept", b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+    ///     ("sec-websocket-protocol", b"chat"),
+    /// ]);
+    /// # Ok::<(), ws_net::HandshakeError>(())
+    /// ```
+    pub fn response_fields<'s>(
+        &'s self,
+        protocol: Option<&'s str>,
+        extensions: &Negotiated,
+    ) -> Result<ResponseFields<'s>, HandshakeError> {
+        if let Some(p) = protocol {
+            if !self.protocols.iter().any(|offered| offered == p) {
+                return Err(HandshakeError::InvalidProtocol);
+            }
+        }
+        let _ = extensions;
+        Ok(ResponseFields {
+            accept: self.accept.as_bytes(),
+            protocol,
+            next: 0,
+        })
+    }
+
     /// Writes the complete `101 Switching Protocols` response, selecting
     /// `protocol` (which must be one the client offered) or none.
     /// Extensions are never accepted. With `http-net`, send
@@ -490,6 +664,35 @@ impl ServerHandshake {
     }
 }
 
+/// The header fields of a `101` response, from
+/// [`ServerHandshake::response_fields`].
+///
+/// # Examples
+///
+/// See [`ServerHandshake::response_fields`].
+#[derive(Clone, Debug)]
+pub struct ResponseFields<'s> {
+    accept: &'s [u8],
+    protocol: Option<&'s str>,
+    next: u8,
+}
+
+impl<'s> Iterator for ResponseFields<'s> {
+    type Item = (&'static str, &'s [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = match self.next {
+            0 => ("upgrade", &b"websocket"[..]),
+            1 => ("connection", &b"upgrade"[..]),
+            2 => ("sec-websocket-accept", self.accept),
+            3 => ("sec-websocket-protocol", self.protocol?.as_bytes()),
+            _ => return None,
+        };
+        self.next += 1;
+        Some(item)
+    }
+}
+
 /// The client side of the opening handshake: the request to send and the
 /// check of the server's response.
 ///
@@ -517,6 +720,8 @@ pub struct ClientHandshake {
     expected: AcceptKey,
     protocols: Vec<String>,
     origin: Option<String>,
+    /// Extra request headers, validated at write.
+    headers: Vec<(String, Vec<u8>)>,
     /// Set when the OS random source failed: the nonce is not random, so
     /// the request is never written.
     unusable: bool,
@@ -588,6 +793,7 @@ impl ClientHandshake {
             key,
             protocols: Vec::new(),
             origin: None,
+            headers: Vec::new(),
             unusable: false,
         }
     }
@@ -625,6 +831,32 @@ impl ClientHandshake {
     #[must_use]
     pub fn with_origin(mut self, origin: &str) -> Self {
         self.origin = Some(origin.to_string());
+        self
+    }
+
+    /// Adds a request header: `Authorization`, `Cookie`, a back-channel
+    /// credential. Validated by [`write_request`](Self::write_request): a
+    /// token name that is not one the handshake writes itself (`host`,
+    /// `upgrade`, `connection`, `origin`, `sec-websocket-*`, body framing),
+    /// and a value with no control bytes and no surrounding whitespace.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{ClientHandshake, HandshakeError};
+    ///
+    /// let h = ClientHandshake::with_nonce([0; 16]).with_header("authorization", b"Bearer t0k3n");
+    /// let mut out = Vec::new();
+    /// h.write_request("a", "/", &mut out)?;
+    /// assert!(out.ends_with(b"authorization: Bearer t0k3n\r\n\r\n"));
+    ///
+    /// let bad = ClientHandshake::with_nonce([0; 16]).with_header("Sec-WebSocket-Key", b"x");
+    /// assert_eq!(bad.write_request("a", "/", &mut out), Err(HandshakeError::InvalidRequest));
+    /// # Ok::<(), HandshakeError>(())
+    /// ```
+    #[must_use]
+    pub fn with_header(mut self, name: &str, value: &[u8]) -> Self {
+        self.headers.push((name.to_string(), value.to_vec()));
         self
     }
 
@@ -674,6 +906,9 @@ impl ClientHandshake {
         if self.protocols.iter().any(|p| !is_token(p.as_bytes())) {
             return Err(HandshakeError::InvalidProtocol);
         }
+        for (name, value) in &self.headers {
+            check_extra(name, value)?;
+        }
         out.extend_from_slice(b"GET ");
         out.extend_from_slice(path.as_bytes());
         out.extend_from_slice(b" HTTP/1.1\r\nhost: ");
@@ -698,8 +933,50 @@ impl ClientHandshake {
             }
             out.extend_from_slice(b"\r\n");
         }
+        for (name, value) in &self.headers {
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(value);
+            out.extend_from_slice(b"\r\n");
+        }
         out.extend_from_slice(b"\r\n");
         Ok(())
+    }
+
+    /// Checks the server's response as [`verify`](Self::verify) does, and
+    /// returns everything verified: the selected subprotocol and the
+    /// negotiated extensions. This client offers no extension in this
+    /// version, so any accepted extension is
+    /// [`HandshakeError::UnexpectedExtension`].
+    ///
+    /// # Errors
+    ///
+    /// As [`verify`](Self::verify).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::ClientHandshake;
+    ///
+    /// let client = ClientHandshake::with_nonce(*b"the sample nonce").with_protocols(&["chat"]);
+    /// let fields = [
+    ///     ("Upgrade", &b"websocket"[..]), ("Connection", b"Upgrade"),
+    ///     ("Sec-WebSocket-Accept", b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), ("Sec-WebSocket-Protocol", b"chat"),
+    /// ];
+    /// let verified = client.verify_full(101, fields)?;
+    /// assert_eq!(verified.protocol, Some("chat"));
+    /// assert!(verified.extensions.is_empty());
+    /// # Ok::<(), ws_net::HandshakeError>(())
+    /// ```
+    pub fn verify_full<'h, I>(&self, status: u16, headers: I) -> Result<Verified<'_>, HandshakeError>
+    where
+        I: IntoIterator<Item = (&'h str, &'h [u8])>,
+    {
+        let protocol = self.verify(status, headers)?;
+        Ok(Verified {
+            protocol,
+            extensions: Negotiated::none(),
+        })
     }
 
     /// Checks the server's response (RFC 6455 section 4.1, the client's
@@ -822,6 +1099,8 @@ impl ClientHandshake {
 pub struct Verified<'a> {
     /// The subprotocol the server selected, one the client offered.
     pub protocol: Option<&'a str>,
+    /// The extensions in force (none in this version).
+    pub extensions: Negotiated,
 }
 
 /// A resumable reader for the raw handshake head, for a server or a client
@@ -935,8 +1214,8 @@ impl HeadReader {
             return Ok(None);
         };
         let status = head::status_line(head.first).ok_or(HandshakeError::MalformedHead)?;
-        let protocol = handshake.verify(status, head.fields())?;
-        Ok(Some((Verified { protocol }, head.len)))
+        let verified = handshake.verify_full(status, head.fields())?;
+        Ok(Some((verified, head.len)))
     }
 
     /// Starts over, for the next head.

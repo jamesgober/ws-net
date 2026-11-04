@@ -269,6 +269,13 @@ pub enum HandshakeError {
     /// unpredictable nonce exists for this handshake. Nothing is written;
     /// retry later or fail the connection attempt.
     RandomUnavailable,
+    /// `Sec-WebSocket-Extensions` is malformed or holds more than 16 offers
+    /// of 16 parameters (server side, answer `400`), or the server's
+    /// response breaks the extension rules (client side).
+    InvalidExtensions,
+    /// The server's policy refused the `Host`: it is not one of this
+    /// server's names (DNS rebinding). Answer `403`.
+    HostRefused,
 }
 
 impl HandshakeError {
@@ -290,7 +297,7 @@ impl HandshakeError {
         match self {
             Self::UnsupportedVersion => 426,
             Self::HeadTooLarge => 431,
-            Self::OriginRefused => 403,
+            Self::OriginRefused | Self::HostRefused => 403,
             Self::RandomUnavailable => 500,
             _ => 400,
         }
@@ -353,6 +360,10 @@ impl fmt::Display for HandshakeError {
             Self::OriginRefused => f.write_str("the Origin is not allowed to connect"),
             Self::ProtocolRequired => f.write_str("none of the server's subprotocols was offered"),
             Self::RandomUnavailable => f.write_str("the operating system's random source failed"),
+            Self::InvalidExtensions => {
+                f.write_str("malformed or oversized Sec-WebSocket-Extensions")
+            }
+            Self::HostRefused => f.write_str("the Host is not one of this server's names"),
         }
     }
 }

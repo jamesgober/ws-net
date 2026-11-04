@@ -30,7 +30,7 @@ fn test_keepalive_unset_no_deadlines() {
     let mut conn = Connection::server();
     assert_eq!(conn.on_time(Millis(1_000_000)), Ok(Tick::Nothing));
     assert_eq!(conn.next_deadline(), None);
-    let mut conn = Connection::server().with_keepalive(studio());
+    let conn = Connection::server().with_keepalive(studio());
     // No tick yet: the timers have no start.
     assert_eq!(conn.next_deadline(), None);
 }

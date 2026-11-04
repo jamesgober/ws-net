@@ -113,6 +113,7 @@ mod base64;
 mod close;
 mod conn;
 mod error;
+pub mod extension;
 pub mod frame;
 mod handshake;
 mod head;
@@ -134,7 +135,7 @@ pub use keepalive::{Keepalive, Millis, Tick};
 pub use limits::Limits;
 pub use message::{Message, MessageKind, Stats};
 pub use prepared::PreparedMessage;
-pub use policy::{AcceptPolicy, Accepted, Acceptor, Decision, OriginPolicy, accept};
+pub use policy::{AcceptPolicy, Accepted, Acceptor, Decision, OriginPolicy, accept, write_refusal};
 
 /// The crate version, as in `Cargo.toml`.
 ///

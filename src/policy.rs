@@ -18,9 +18,11 @@ use parse_net::{Origin, OriginValue, parse_host_port, parse_origin, text::is_tok
 
 use crate::{
     conn::Connection,
-    limits::Limits,
     error::HandshakeError,
+    extension::Negotiated,
     handshake::{HeadReader, ServerHandshake},
+    keepalive::Keepalive,
+    limits::Limits,
 };
 
 /// Which `Origin` values may open a connection.
@@ -264,6 +266,11 @@ pub struct AcceptPolicy {
     protocols: Vec<String>,
     require_protocol: bool,
     limits: Limits,
+    keepalive: Option<Keepalive>,
+    /// Allowed `Host` authorities, validated; empty means any.
+    hosts: Vec<String>,
+    /// Whether the endpoint is reached over TLS, when known.
+    secure: Option<bool>,
 }
 
 /// What a policy decided for an acceptable request.
@@ -277,6 +284,9 @@ pub struct Decision<'a> {
     /// The subprotocol to select: the first of the policy's that the client
     /// offered.
     pub protocol: Option<&'a str>,
+    /// The extensions to accept (none in this version: every offer is
+    /// declined, which RFC 6455 allows).
+    pub extensions: Negotiated,
 }
 
 impl AcceptPolicy {
@@ -350,6 +360,127 @@ impl AcceptPolicy {
         self
     }
 
+    /// Sets the keepalive and timeouts of accepted connections.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use core::time::Duration;
+    /// use ws_net::{AcceptPolicy, Keepalive};
+    ///
+    /// let k = Keepalive::new().with_ping_interval(Duration::from_secs(30));
+    /// assert_eq!(AcceptPolicy::new().with_keepalive(k).keepalive(), Some(&k));
+    /// ```
+    #[must_use]
+    pub fn with_keepalive(mut self, keepalive: Keepalive) -> Self {
+        self.keepalive = Some(keepalive);
+        self
+    }
+
+    /// Sets the `Host` values this server answers to (the DNS-rebinding
+    /// defense: a page on the attacker's domain, resolved to this server's
+    /// address, sends the attacker's name as `Host`). Each entry is an RFC
+    /// 3986 authority, a host and an optional port, compared ASCII
+    /// case-insensitively, IP literals by value. An entry without a port
+    /// matches the endpoint's default port (443 with
+    /// [`with_secure(true)`](Self::with_secure), 80 with `false`; a request
+    /// without a port only, when unknown).
+    ///
+    /// # Errors
+    ///
+    /// [`HandshakeError::InvalidRequest`] for an entry that is not an
+    /// authority (userinfo, an empty or invalid port, a path).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{AcceptPolicy, HandshakeError};
+    ///
+    /// let p = AcceptPolicy::new().with_hosts(&["chat.example.com", "[::1]:8080"])?;
+    /// assert_eq!(p.hosts().count(), 2);
+    /// for bad in ["u@chat.example", "chat.example:", "chat.example:65536", "chat.example/x", ""] {
+    ///     assert_eq!(AcceptPolicy::new().with_hosts(&[bad]), Err(HandshakeError::InvalidRequest));
+    /// }
+    /// # Ok::<(), HandshakeError>(())
+    /// ```
+    pub fn with_hosts(mut self, hosts: &[&str]) -> Result<Self, HandshakeError> {
+        let mut list = Vec::with_capacity(hosts.len());
+        for entry in hosts {
+            match parse_net::host::parse_uri_host_port(entry.as_bytes()) {
+                Ok(hp) if !hp.empty_port && !hp.host.is_empty() => list.push(entry.to_string()),
+                _ => return Err(HandshakeError::InvalidRequest),
+            }
+        }
+        self.hosts = list;
+        Ok(self)
+    }
+
+    /// Tells the policy whether this endpoint is reached over TLS (`wss`).
+    /// The same-origin rule then also requires the page's scheme to match
+    /// (`https` for `true`, `http` for `false`), and a port-less `Host`
+    /// entry means 443 or 80.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{AcceptPolicy, HandshakeError, ServerHandshake};
+    ///
+    /// let h = ServerHandshake::from_request("GET", "/", [
+    ///     ("Host", &b"chat.example"[..]), ("Upgrade", b"websocket"), ("Connection", b"Upgrade"),
+    ///     ("Sec-WebSocket-Version", b"13"), ("Sec-WebSocket-Key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+    ///     ("Origin", b"http://chat.example"),
+    /// ])?;
+    /// assert!(AcceptPolicy::new().check(&h).is_ok()); // scheme not compared
+    /// let wss = AcceptPolicy::new().with_secure(true);
+    /// assert_eq!(wss.check(&h), Err(HandshakeError::OriginRefused)); // an http page
+    /// # Ok::<(), HandshakeError>(())
+    /// ```
+    #[must_use]
+    pub fn with_secure(mut self, secure: bool) -> Self {
+        self.secure = Some(secure);
+        self
+    }
+
+    /// The keepalive of accepted connections, if set.
+    ///
+    /// # Examples
+    ///
+    /// See [`with_keepalive`](Self::with_keepalive).
+    #[must_use]
+    pub fn keepalive(&self) -> Option<&Keepalive> {
+        self.keepalive.as_ref()
+    }
+
+    /// The `Host` allowlist (empty: any).
+    ///
+    /// # Examples
+    ///
+    /// See [`with_hosts`](Self::with_hosts).
+    pub fn hosts(&self) -> impl Iterator<Item = &str> {
+        self.hosts.iter().map(String::as_str)
+    }
+
+    /// Whether `host` is allowed by the `Host` list (always, when empty).
+    fn host_allowed(&self, host: &str) -> bool {
+        if self.hosts.is_empty() {
+            return true;
+        }
+        let Ok(got) = parse_net::parse_host_port(host.as_bytes()) else {
+            return false;
+        };
+        if got.empty_port {
+            return false;
+        }
+        let default = self.secure.map(|tls| if tls { 443 } else { 80 });
+        let effective = |port: Option<u16>| port.or(default);
+        self.hosts.iter().any(|entry| {
+            parse_net::host::parse_uri_host_port(entry.as_bytes()).is_ok_and(|want| {
+                want.host.eq_ignore_ascii_case(&got.host)
+                    && effective(want.port) == effective(got.port)
+            })
+        })
+    }
+
     /// The Origin rule.
     ///
     /// # Examples
@@ -401,8 +532,22 @@ impl AcceptPolicy {
         &self,
         handshake: &'h ServerHandshake,
     ) -> Result<Decision<'h>, HandshakeError> {
+        if !self.host_allowed(handshake.host()) {
+            return Err(HandshakeError::HostRefused);
+        }
         if !self.origins.permits(handshake.origin(), handshake.host()) {
             return Err(HandshakeError::OriginRefused);
+        }
+        if let (Some(tls), OriginPolicy::SameOrigin { .. }, Some(origin)) =
+            (self.secure, &self.origins, handshake.origin())
+        {
+            let scheme = if tls { "https://" } else { "http://" };
+            let matches = origin
+                .get(..scheme.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(scheme));
+            if !matches {
+                return Err(HandshakeError::OriginRefused);
+            }
         }
         let protocol = self
             .protocols
@@ -411,7 +556,10 @@ impl AcceptPolicy {
         if protocol.is_none() && self.require_protocol {
             return Err(HandshakeError::ProtocolRequired);
         }
-        Ok(Decision { protocol })
+        Ok(Decision {
+            protocol,
+            extensions: Negotiated::none(),
+        })
     }
 }
 
@@ -448,8 +596,67 @@ impl ServerHandshake {
     ) -> Result<Connection, HandshakeError> {
         let decision = policy.check(self)?;
         self.write_response(decision.protocol, out)?;
-        Ok(Connection::server().with_limits(policy.limits))
+        let conn = Connection::server().with_limits(policy.limits);
+        Ok(match policy.keepalive {
+            Some(k) => conn.with_keepalive(k),
+            None => conn,
+        })
     }
+}
+
+/// Appends a complete refusal response: `HTTP/1.1 <status> <reason>`,
+/// `content-length: 0`, `connection: close`, and `retry-after` when given.
+/// For refusals a server decides itself: 403 by policy, 429 for a rate
+/// limit, 503 when shedding load. (A [`HandshakeError`] writes its own
+/// with [`HandshakeError::write_response`].)
+///
+/// # Errors
+///
+/// [`HandshakeError::InvalidRequest`] for a status outside 400 to 599;
+/// nothing is written.
+///
+/// # Examples
+///
+/// ```
+/// let mut out = Vec::new();
+/// ws_net::write_refusal(503, Some(30), &mut out)?;
+/// assert_eq!(out, b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\
+///     connection: close\r\nretry-after: 30\r\n\r\n");
+/// assert!(ws_net::write_refusal(200, None, &mut out).is_err());
+/// # Ok::<(), ws_net::HandshakeError>(())
+/// ```
+pub fn write_refusal(
+    status: u16,
+    retry_after_seconds: Option<u32>,
+    out: &mut Vec<u8>,
+) -> Result<(), HandshakeError> {
+    if !(400..=599).contains(&status) {
+        return Err(HandshakeError::InvalidRequest);
+    }
+    let reason = match status {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        408 => "Request Timeout",
+        426 => "Upgrade Required",
+        429 => "Too Many Requests",
+        431 => "Request Header Fields Too Large",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        s if s < 500 => "Client Error",
+        _ => "Server Error",
+    };
+    out.extend_from_slice(b"HTTP/1.1 ");
+    out.extend_from_slice(alloc::format!("{status} {reason}").as_bytes());
+    out.extend_from_slice(b"\r\ncontent-length: 0\r\nconnection: close\r\n");
+    if let Some(secs) = retry_after_seconds {
+        out.extend_from_slice(alloc::format!("retry-after: {secs}\r\n").as_bytes());
+    }
+    out.extend_from_slice(b"\r\n");
+    Ok(())
 }
 
 /// An accepted connection: write [`response`](Self::response) to the
@@ -672,6 +879,70 @@ mod tests {
             allow_missing: false,
         };
         assert!(!raw.permits(Some("not an origin"), "a"));
+    }
+
+    fn handshake(host: &str, origin: Option<&str>) -> ServerHandshake {
+        let mut fields: Vec<(&str, &[u8])> = alloc::vec![
+            ("Host", host.as_bytes()),
+            ("Upgrade", b"websocket"),
+            ("Connection", b"Upgrade"),
+            ("Sec-WebSocket-Version", b"13"),
+            ("Sec-WebSocket-Key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+        ];
+        if let Some(o) = origin {
+            fields.push(("Origin", o.as_bytes()));
+        }
+        ServerHandshake::from_request("GET", "/", fields).unwrap()
+    }
+
+    #[test]
+    fn test_host_allowlist_dns_rebinding_refused_403() {
+        let p = AcceptPolicy::new()
+            .with_origins(OriginPolicy::any_origin())
+            .with_hosts(&["chat.example", "[::1]:8080", "10.0.0.1:9000"])
+            .unwrap();
+        for ok in ["chat.example", "CHAT.EXAMPLE", "[0::1]:8080", "10.0.0.1:9000"] {
+            assert!(p.check(&handshake(ok, None)).is_ok(), "{ok}");
+        }
+        for bad in ["attacker.example", "chat.example:8080", "[::1]", "10.0.0.1", "chat.example.evil"] {
+            assert_eq!(p.check(&handshake(bad, None)), Err(HandshakeError::HostRefused), "{bad}");
+        }
+        assert_eq!(HandshakeError::HostRefused.status(), 403);
+        // With the endpoint's scheme known, a port-less entry means its default.
+        let tls = p.clone().with_secure(true);
+        assert!(tls.check(&handshake("chat.example:443", None)).is_ok());
+        assert!(tls.check(&handshake("chat.example:80", None)).is_err());
+        let plain = p.with_secure(false);
+        assert!(plain.check(&handshake("chat.example:80", None)).is_ok());
+    }
+
+    #[test]
+    fn test_secure_same_origin_pins_scheme() {
+        let wss = AcceptPolicy::new().with_secure(true);
+        assert!(wss.check(&handshake("a.example", Some("https://a.example"))).is_ok());
+        assert_eq!(
+            wss.check(&handshake("a.example", Some("http://a.example"))),
+            Err(HandshakeError::OriginRefused)
+        );
+        let ws = AcceptPolicy::new().with_secure(false);
+        assert!(ws.check(&handshake("a.example", Some("http://a.example"))).is_ok());
+        // Missing Origin is still governed by allow_missing.
+        assert!(wss.check(&handshake("a.example", None)).is_ok());
+    }
+
+    #[test]
+    fn test_write_refusal_statuses() {
+        let mut out = Vec::new();
+        write_refusal(429, None, &mut out).unwrap();
+        assert!(out.starts_with(b"HTTP/1.1 429 Too Many Requests\r\n"));
+        out.clear();
+        write_refusal(499, None, &mut out).unwrap();
+        assert!(out.starts_with(b"HTTP/1.1 499 Client Error\r\n"));
+        for bad in [0, 101, 399, 600] {
+            let mut out = Vec::new();
+            assert_eq!(write_refusal(bad, None, &mut out), Err(HandshakeError::InvalidRequest));
+            assert!(out.is_empty());
+        }
     }
 
     #[test]

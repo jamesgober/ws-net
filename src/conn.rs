@@ -1766,7 +1766,8 @@ impl Connection {
     /// [`State::Closed`] and its output is written. A server closes first
     /// (RFC 6455 section 7.1.1), so for a server that is the whole rule; a
     /// client waits for the server to close, so for a client it also needs
-    /// the server's EOF fed, a failure, or the close timeout.
+    /// the server's EOF fed or a failure. After the close timeout it is
+    /// true at once, even with output unwritten: the peer stopped reading.
     ///
     /// # Examples
     ///
@@ -1785,6 +1786,11 @@ impl Connection {
     /// ```
     #[must_use]
     pub fn should_close_transport(&self) -> bool {
+        // The peer stopped answering our Close: what is still queued will
+        // not be read.
+        if self.writer.timed_out {
+            return true;
+        }
         if self.state() != State::Closed || self.writer.pending() > 0 {
             return false;
         }

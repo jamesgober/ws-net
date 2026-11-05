@@ -11,6 +11,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `parse-net` 0.9.1. Extension parameters are read with its
+  optional-value parameter parser, which replaces ws-net's own loop. Empty
+  parameters (`permessage-deflate;`, `a;;b`) are now skipped instead of
+  refused; everything accepted before is still accepted, with the same
+  parameters.
+
 ---
 
 ## [0.7.0] - 2026-11-05

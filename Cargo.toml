@@ -61,7 +61,7 @@ std = ["dep:mod-rand"]
 # First party, no third-party dependencies of its own: the shared RFC 9110
 # grammar (tokens, OWS, lists, field-value checks, Origin, Host). Default
 # features off: no_std, no allocator.
-parse-net = { version = "0.9", default-features = false }
+parse-net = { version = "0.9.1", default-features = false }
 # First party, no dependencies: the OS cryptographic random source (its
 # tier 3) for masking seeds and nonces, feature `std` only.
 mod-rand = { version = "1", default-features = false, features = ["tier3"], optional = true }

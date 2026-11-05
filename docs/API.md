@@ -1339,9 +1339,12 @@ pub const MAX_PARAMS: usize = 16;
 ```
 
 RFC 6455 section 9.1: `extension = token *( ";" param )`, `param = token [
-"=" ( token / quoted-string ) ]`. The list is read with `parse-net` (commas
-inside quoted strings do not split); a value may be absent; a quoted value
-must be a token once unquoted, and one with a backslash escape is refused.
+"=" ( token / quoted-string ) ]`. The list and the parameters are read
+with `parse-net` (commas inside quoted strings do not split); a value may
+be absent; there is no whitespace around `=`; empty parameters (`a;;b`)
+are skipped; a repeated name is kept, in order, for the extension's
+negotiation to judge; a quoted value must be a token once unquoted, and one
+with a backslash escape is refused.
 `ServerHandshake::from_request` validates every offer (at most 16 over all
 fields) and `extensions()` iterates them. In this version no extension is
 negotiated: every offer is declined (RFC 6455 allows it), and a client

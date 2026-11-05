@@ -1,7 +1,7 @@
 # ws-net - API Reference
 
 > Complete reference for every public item in `ws-net`, with examples.
-> **Status: pre-1.0 (0.6.0), design locked.** Every item of the 1.0 surface
+> **Status: pre-1.0 (0.7.0), design locked.** Every item of the 1.0 surface
 > is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
 > lands in; items marked shipped are documented in full below. The surface is
 > frozen at `1.0.0`, after LexerSketch Studio ships on it. See
@@ -102,10 +102,10 @@ async runtime, a test harness, or memory.
 
 ```toml
 [dependencies]
-ws-net = "0.6"
+ws-net = "0.7"
 
 # no_std (alloc only)
-ws-net = { version = "0.6", default-features = false }
+ws-net = { version = "0.7", default-features = false }
 ```
 
 ## Quick start
@@ -282,7 +282,7 @@ what this end sends is bounded too:
 - A send that would take the pending output over
   [`Limits::max_output`](#limits) (32 MiB by default) is refused with
   `OutputFull` and changes nothing. Automatic Pongs and Close frames may use
-  256 bytes more, so a connection whose peer stopped reading can still
+  262 bytes more, so a connection whose peer stopped reading can still
   answer and close.
 - An automatic Pong still unwritten at the end of the output is replaced by
   the next one, so a peer that pings without reading cannot grow the output.
@@ -293,7 +293,7 @@ what this end sends is bounded too:
 
 Peak memory of a busy connection: the input buffer, plus the message being
 reassembled (at most `max_message` plus 1 MiB reserved ahead), plus the
-output (at most twice `max_output` + 256 by vector growth, plus 64 KiB of
+output (at most twice `max_output` + 262 by vector growth, plus 64 KiB of
 written prefix before compaction). An idle connection after
 `release_memory`: `size_of::<Connection>()`, at most 512 bytes.
 `tests/memory.rs` checks each bound with a counting allocator.
@@ -556,7 +556,7 @@ assert!(conn.is_open() && !conn.can_send());
 |---|---|
 | `with_keepalive(self, keepalive: Keepalive) -> Connection` | Sets the ping interval and timeouts ([`Keepalive`](#keepalive-millis-tick)). |
 | `on_time(&mut self, now: Millis) -> Result<Tick, WsError>` | Applies the rules at `now` (the caller's monotonic milliseconds). Any input since the last call is activity. Order: close timeout, idle timeout, message timeout, keepalive Ping. `Tick::PingQueued` means write the output. |
-| `next_deadline(&self) -> Option<Millis>` | When `on_time` next has work; `None` with no timer armed. Sleep until then. |
+| `next_deadline(&self) -> Option<Millis>` | When `on_time` next has work; `None` with no timer armed. After `Closed`, the close timeout stays armed while output is unwritten (or a client waits for EOF). Sleep until then. |
 | `should_close_transport(&self) -> bool` | `Closed` and the output written; a client also needs the server's EOF, a failure, or the close timeout (the server closes first). |
 
 Errors from `on_time`: `IdleTimeout` (Close 1001 queued), `CloseTimeout`
@@ -577,6 +577,9 @@ assert_eq!(conn.next_deadline(), Some(Millis(30_000)));
 assert_eq!(conn.on_time(Millis(30_000))?, Tick::PingQueued); // Ping payload: the time
 assert_eq!(conn.next_deadline(), Some(Millis(75_000)));
 assert_eq!(conn.on_time(Millis(75_000)), Err(WsError::IdleTimeout)); // Close 1001 queued
+assert_eq!(conn.next_deadline(), Some(Millis(80_000))); // the close timeout bounds the write
+let n = conn.output().len();
+conn.advance_output(n); // written
 assert_eq!(conn.next_deadline(), None);
 # Ok::<(), WsError>(())
 ```

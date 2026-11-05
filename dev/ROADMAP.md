@@ -78,17 +78,21 @@ Exit: every P0 to P2 API item exists except the moved deflate items; no API addi
 
 Exit: NFR-4 (no allocation per message in steady state) and NFR-11 met; the competitor table published with each shortfall named.
 
-## v0.7.0 - Hardening
-- [ ] cargo-fuzz targets: frame header, connection (both roles), connection API sequences, server and client heads, extension parsing, Origin policy, base64; 24 hours each; differential fuzzing against tungstenite.
-- [ ] Autobahn TestSuite in CI for both roles (strict: every case of sections 1 to 10 OK); `examples/autobahn_server`, `autobahn_client`.
-- [ ] `tests/attacks.rs`: one test per threat in the plan.
-- [ ] Soak: 100,000 in-memory connection pairs for 4 hours with no memory growth beyond the configured bounds.
-- [ ] Big-endian check; tls-net example if tls-net is published (otherwise recorded and moved).
-- [ ] `docs/SECURITY.md`.
+## v0.7.0 - Hardening (DONE)
+- [x] cargo-fuzz targets: frame header, connection (both roles), connection API sequences, server and client heads, extension parsing, Origin policy, handshake keys (the base64 decoder is private, so it is fuzzed through the key check), and differential fuzzing against tungstenite 0.30.0; 24 hours each (`fuzz/run-all.sh`); a CI job builds them and runs each for 30 seconds.
+- [x] Autobahn TestSuite in CI for both roles (strict), since 0.5.
+- [x] `tests/attacks.rs`: one test per threat T-1 to T-29 (T-19 to T-21 wait for permessage-deflate, 1.1).
+- [x] Soak: 100,000 in-memory connection pairs for 4 hours (`tests/soak.rs`).
+- [x] Big-endian check: the frame codec, masking, SHA-1, base64, and key tests under Miri on `s390x-unknown-linux-gnu`.
+- [x] `docs/SECURITY.md`.
+- **Moved to 0.8 (reason: integration work that belongs with the consumer runs):** the tls-net example (FR-46). tls-net 0.4.0 is published; the example needs an in-memory TLS pump over tls-net's step API and its test CA, and serve-net's TLS seam exercises the same path end to end in 0.8.
+- **Moved to 0.8 (reason: needs net-io's driver):** end-to-end benchmark row 4.
 
 Exit: Autobahn strict pass, fuzz 24 hours clean, soak 4 hours, every threat test passing.
 
 ## v0.8.0 - Alpha
+- [ ] The tls-net example and test (moved from 0.7): ws-net over a tls-net session, the close order (ws-net Close, TLS close_notify, TCP close).
+- [ ] End-to-end benchmark over net-io's driver (moved from 0.7).
 - [ ] Real consumers end to end: LexerSketch Studio with keepalive; serve-net's WebSocket upgrade route; a gateway consumer using the policy, counters, wipe, and close-on-revocation contract.
 - [ ] Socket-level soak with net-io.
 - [ ] `docs/ARCHITECTURE.md`, `docs/PLATFORM-NOTES.md`.

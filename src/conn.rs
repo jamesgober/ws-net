@@ -24,10 +24,10 @@ const OUT_COMPACT: usize = 64 * 1024;
 /// A header announces a length but proves nothing; with the budgets lifted,
 /// reserving what it announces would let 14 bytes request terabytes.
 const RESERVE_CAP: u64 = 1024 * 1024;
-/// Output allowed above `max_output` for an automatic Pong (at most 127
-/// bytes) and a Close (at most 129), so a flooded queue can still answer
-/// and close.
-const CONTROL_HEADROOM: u64 = 256;
+/// Output allowed above `max_output` for an automatic Pong and a Close, at
+/// most 131 bytes each (2 header bytes, a 4-byte mask for a client, 125
+/// bytes of payload), so a flooded queue can still answer and close.
+const CONTROL_HEADROOM: u64 = 262;
 
 /// Which end of the connection this is. Clients mask every frame they send
 /// and refuse masked frames; servers do the opposite.
@@ -302,6 +302,16 @@ impl Reader {
     }
 }
 
+/// Zeroes all of `v`'s allocation, spare capacity included (bytes a
+/// compaction or a `clear` left behind), then empties it.
+fn wipe_vec(v: &mut Vec<u8>) {
+    v.iter_mut().for_each(|b| *b = 0);
+    let spare = v.capacity() - v.len();
+    v.extend(core::iter::repeat_n(0, spare));
+    let _ = black_box(&mut *v);
+    v.clear();
+}
+
 /// The length of the UTF-8 sequence that `lead` starts, or 0 when `lead`
 /// cannot start one.
 const fn utf8_width(lead: u8) -> usize {
@@ -426,9 +436,15 @@ impl Writer {
         }
         self.check_data_room(self.message_size(data.len(), max))?;
         let count = data.len().div_ceil(max);
+        let before = self.out.len();
         for (i, piece) in data.chunks(max).enumerate() {
             let opcode = if i == 0 { first } else { Opcode::Continuation };
-            self.frame(opcode, fin && i + 1 == count, piece)?;
+            if let Err(e) = self.frame(opcode, fin && i + 1 == count, piece) {
+                // Only a failed key refill gets here: take back the frames
+                // already written, so the refused send changes nothing.
+                self.out.truncate(before);
+                return Err(e);
+            }
         }
         Ok(())
     }
@@ -507,9 +523,7 @@ impl Writer {
 
     /// Zeroes everything this writer holds that the peer did not see.
     fn wipe(&mut self) {
-        self.out.iter_mut().for_each(|b| *b = 0);
-        let _ = black_box(&mut self.out);
-        self.out.clear();
+        wipe_vec(&mut self.out);
         self.out_pos = 0;
         self.pong_at = None;
         if let Some(masks) = self.masks.as_mut() {
@@ -601,8 +615,9 @@ impl Writer {
             }
             None => 0,
         };
+        self.frame(Opcode::Close, true, &payload[..len])?;
         self.sent_close = true;
-        self.frame(Opcode::Close, true, &payload[..len])
+        Ok(())
     }
 
     /// Fails the connection (RFC 6455 section 7.1.7): queue a Close with the
@@ -1197,8 +1212,8 @@ fn poll_inner<'r>(
                             reader.msg.extend_from_slice(chunk);
                         }
                         Kind::Text => {
-                            let grown =
-                                grow_text(&mut reader.text, chunk.len(), limits.max_message());
+                            let need = chunk.len() + usize::from(reader.carry_len);
+                            let grown = grow_text(&mut reader.text, need, limits.max_message());
                             if let Err(e) = grown {
                                 return Err(writer.fail(e));
                             }
@@ -1329,6 +1344,11 @@ fn poll_inner<'r>(
                 if let Some(key) = header.mask {
                     apply_mask(payload, key, 0);
                 }
+                let payload = reader.input.get(start..end).unwrap_or(&[]);
+                if kind == Kind::Text && core::str::from_utf8(payload).is_err() {
+                    return Err(writer.fail(WsError::InvalidUtf8));
+                }
+                // Lent (for `detach_message`) only once it is valid.
                 reader.messages_in = reader.messages_in.saturating_add(1);
                 reader.lent = Some(Lent::Input(kind.into(), start, end));
                 let payload = reader.input.get(start..end).unwrap_or(&[]);
@@ -1672,11 +1692,27 @@ impl Connection {
         let clock = &mut self.clock;
         let reader = &mut self.reader;
         let writer = &mut self.writer;
-        if writer.failed || reader.received_close || !clock.armed {
+        if !clock.armed {
             return Ok(Tick::Nothing);
         }
         let now = now.as_u64().max(clock.now);
         clock.now = now;
+        if writer.failed || reader.received_close {
+            // Closed, but the transport may still wait on a peer that is
+            // not reading our output, or (a client) on the server's EOF:
+            // the close timeout bounds that wait. A timer failure started
+            // it already; any other starts it now.
+            let waiting = writer.pending() > 0 || (writer.role == Role::Client && !reader.eof);
+            if waiting && !writer.timed_out {
+                if clock.close_sent == UNSET {
+                    clock.close_sent = now;
+                }
+                if due(clock.close_sent, clock.close).is_some_and(|d| d <= now) {
+                    writer.timed_out = true;
+                }
+            }
+            return Ok(Tick::Nothing);
+        }
         if reader.arrived || clock.last_rx == UNSET {
             reader.arrived = false;
             clock.last_rx = now;
@@ -1693,6 +1729,9 @@ impl Connection {
             }
         }
         if is_due(clock.last_rx, clock.idle) {
+            if clock.close_sent == UNSET {
+                clock.close_sent = now; // the queued 1001
+            }
             return Err(writer.fail(WsError::IdleTimeout));
         }
         if reader.in_message() {
@@ -1701,20 +1740,24 @@ impl Connection {
                 clock.message_seq = reader.messages_in;
             }
             if is_due(clock.message_started, clock.message) {
+                if clock.close_sent == UNSET {
+                    clock.close_sent = now; // the queued 1008
+                }
                 return Err(writer.fail(WsError::MessageTimeout));
             }
         } else {
             clock.message_started = UNSET;
         }
-        if clock.ping_sent == UNSET
-            && !writer.sent_close
-            && is_due(clock.last_rx, clock.ping)
-            && writer
+        if clock.ping_sent == UNSET && !writer.sent_close && is_due(clock.last_rx, clock.ping) {
+            // Marked as sent even when the output is full, so the deadline
+            // moves on instead of firing on every tick.
+            clock.ping_sent = now;
+            if writer
                 .send_control(Opcode::Ping, &now.to_be_bytes())
                 .is_ok()
-        {
-            clock.ping_sent = now;
-            return Ok(Tick::PingQueued);
+            {
+                return Ok(Tick::PingQueued);
+            }
         }
         Ok(Tick::Nothing)
     }
@@ -1730,8 +1773,21 @@ impl Connection {
     #[must_use]
     pub fn next_deadline(&self) -> Option<Millis> {
         let c = &self.clock;
-        if !c.armed || self.writer.failed || self.reader.received_close {
+        if !c.armed {
             return None;
+        }
+        if self.writer.failed || self.reader.received_close {
+            let w = &self.writer;
+            let waiting = w.pending() > 0 || (w.role == Role::Client && !self.reader.eof);
+            if !waiting || w.timed_out {
+                return None;
+            }
+            let since = if c.close_sent == UNSET {
+                c.now
+            } else {
+                c.close_sent
+            };
+            return due(since, c.close).map(Millis);
         }
         let ping = if c.ping_sent == UNSET && !self.writer.sent_close {
             due(c.last_rx, c.ping)
@@ -1766,7 +1822,8 @@ impl Connection {
     /// [`State::Closed`] and its output is written. A server closes first
     /// (RFC 6455 section 7.1.1), so for a server that is the whole rule; a
     /// client waits for the server to close, so for a client it also needs
-    /// the server's EOF fed, a failure, or the close timeout.
+    /// the server's EOF fed or a failure. After the close timeout it is
+    /// true at once, even with output unwritten: the peer stopped reading.
     ///
     /// # Examples
     ///
@@ -1785,6 +1842,11 @@ impl Connection {
     /// ```
     #[must_use]
     pub fn should_close_transport(&self) -> bool {
+        // The peer stopped answering our Close: what is still queued will
+        // not be read.
+        if self.writer.timed_out {
+            return true;
+        }
         if self.state() != State::Closed || self.writer.pending() > 0 {
             return false;
         }
@@ -1899,14 +1961,10 @@ impl Connection {
     /// ```
     pub fn wipe(&mut self) {
         let r = &mut self.reader;
-        r.input.iter_mut().for_each(|b| *b = 0);
-        let _ = black_box(&mut r.input);
-        r.msg.iter_mut().for_each(|b| *b = 0);
-        let _ = black_box(&mut r.msg);
-        r.msg.clear();
+        wipe_vec(&mut r.input);
+        wipe_vec(&mut r.msg);
         let mut text = core::mem::take(&mut r.text).into_bytes();
-        text.iter_mut().for_each(|b| *b = 0);
-        let _ = black_box(&mut text);
+        wipe_vec(&mut text);
         r.carry = [0; 4];
         r.carry_len = 0;
         r.pos = 0;

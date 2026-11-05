@@ -1,0 +1,88 @@
+# cargo-fuzz targets for ws-net: every parser and decoder, the connection
+# in both roles, API call sequences, and a differential target against
+# tungstenite. Not published; the corpus lives outside the repository.
+[package]
+name    = "ws-net-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ws-net        = { path = ".." }
+tungstenite   = { version = "=0.30.0", default-features = false }
+
+[[bin]]
+name = "frame_header"
+path = "fuzz_targets/frame_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "connection_server"
+path = "fuzz_targets/connection_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "connection_client"
+path = "fuzz_targets/connection_client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "connection_api"
+path = "fuzz_targets/connection_api.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "server_head"
+path = "fuzz_targets/server_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_head"
+path = "fuzz_targets/client_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "extension_parse"
+path = "fuzz_targets/extension_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "origin_policy"
+path = "fuzz_targets/origin_policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake_key"
+path = "fuzz_targets/handshake_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "differential_tungstenite"
+path = "fuzz_targets/differential_tungstenite.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

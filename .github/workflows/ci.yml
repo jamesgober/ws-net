@@ -103,6 +103,26 @@ jobs:
           name: autobahn-reports
           path: autobahn/reports/
 
+  fuzz:
+    name: Fuzz targets (build, 30 s each)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Build
+        run: cd fuzz && cargo +nightly fuzz build --target x86_64-unknown-linux-gnu
+      - name: Run each target for 30 seconds
+        run: |
+          cd fuzz
+          for t in $(cargo +nightly fuzz list); do
+            mkdir -p "corpus/$t"
+            cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "$t" "corpus/$t" -- -max_total_time=30 -rss_limit_mb=4096
+          done
+
   security:
     name: Security (audit + deny)
     runs-on: ubuntu-latest

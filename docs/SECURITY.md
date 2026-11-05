@@ -96,7 +96,25 @@ Ten cargo-fuzz targets (`fuzz/`), the corpus outside the repository:
 Run: `fuzz/run-all.sh 24` (WSL or Linux, nightly). The record of each run
 is below; every crash becomes a regression test before it is fixed.
 
-FUZZ_RECORD
+### 0.7.0: 2026-11-04 to 2026-11-05
+
+All ten targets, 24 hours each, at once on one shared machine (WSL,
+nightly, one libFuzzer process per target), on the code after the
+review fixes. No crash, no timeout, no out-of-memory, no artifact.
+35.32 billion inputs in all.
+
+| Target | Inputs run | Findings |
+|---|---:|---|
+| `frame_header` | 12.29 billion | none |
+| `extension_parse` | 7.27 billion | none |
+| `handshake_key` | 5.59 billion | none |
+| `origin_policy` | 4.53 billion | none |
+| `server_head` | 2.38 billion | none |
+| `client_head` | 1.82 billion | none |
+| `connection_client` | 486 million | none |
+| `connection_api` | 446 million | none |
+| `connection_server` | 245 million | none |
+| `differential_tungstenite` | 245 million | none |
 
 ## Review
 

@@ -647,8 +647,10 @@ pub(crate) mod on {
                     .with_context_takeover(tx_keep)
                     .with_level(level),
                 tx_keep,
+                // At least 9 bits: zlib, behind most peers, raises a raw
+                // window of 8 to 9 and may refer that far back (D-061).
                 rx_config: MessageConfig::new()
-                    .with_window_bits(rx_bits)
+                    .with_window_bits(rx_bits.max(9))
                     .with_context_takeover(rx_keep),
                 rx_keep,
                 min_size: a.min_size,

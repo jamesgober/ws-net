@@ -465,6 +465,56 @@ fn test_inflated_size_budget_exact_and_one_over() {
 }
 
 #[test]
+fn test_detach_after_invalid_inflated_text_gives_nothing() {
+    let mut srv = server();
+    let _ = srv.feed(&frame(0xC1, &[0x00, 0x01, 0x00, 0xFE, 0xFF, 0xFF]));
+    assert_eq!(srv.poll().unwrap_err(), WsError::InvalidUtf8);
+    assert_eq!(srv.detach_message(&mut Vec::new()), None);
+    assert_eq!(srv.stats().messages_in, 0);
+}
+
+#[test]
+fn test_window_bits_8_agreed_accepts_9_bit_peer() {
+    // A zlib peer told 8 compresses with 9; the decoder allows it.
+    let eight = DeflateConfig::new().with_client_max_window_bits(8);
+    let nine = DeflateConfig::new().with_client_max_window_bits(9);
+    let (mut srv, _) = pair(eight, DeflateConfig::new());
+    let (_, mut peer) = pair(nine, nine);
+    let text: String = noise(3000)
+        .iter()
+        .map(|b| char::from(b'a' + b % 3))
+        .collect();
+    let text = text.clone() + &text;
+    peer.send_text(&text).unwrap();
+    shuttle(&mut peer, &mut srv);
+    assert_eq!(
+        next(&mut srv).unwrap(),
+        Some((MessageKind::Text, text.into_bytes()))
+    );
+}
+
+#[test]
+#[ignore = "needs compress-lib's per-call output growth fix (D-062)"]
+fn test_inflate_fed_byte_by_byte_is_linear() {
+    // 4 MiB of one byte compresses to about 18 KB; inflating it one byte
+    // per poll must cost about what one poll does, not one pass over the
+    // output per byte.
+    let wire = zeros(4 << 20);
+    let mut srv = server();
+    let start = std::time::Instant::now();
+    let mut got = 0;
+    for b in &wire {
+        assert_eq!(srv.feed(&[*b]), 1);
+        if let Some((_, m)) = next(&mut srv).unwrap() {
+            got = m.len();
+        }
+    }
+    assert_eq!(got, 4 << 20);
+    let took = start.elapsed();
+    assert!(took < std::time::Duration::from_secs(3), "{took:?}");
+}
+
+#[test]
 fn test_bomb_stops_at_the_budget() {
     // About 70 KiB of compressed zeros expand to 16 MiB; the budget is 1 MiB.
     let wire = zeros(16 << 20);

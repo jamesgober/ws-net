@@ -437,6 +437,80 @@ impl<S: Read + Write> WebSocket<S> {
         self.flush()
     }
 
+    /// Sets the keepalive and timeout rules of the connection (see
+    /// [`Keepalive`](crate::Keepalive)); for connections from [`accept`],
+    /// [`connect`], and [`connect_with`], which start with the 5 s close
+    /// timeout only. Give the stream a read timeout too, so the timers
+    /// tick while a read waits.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{io::Cursor, time::Duration};
+    /// use ws_net::{Connection, Keepalive, blocking::WebSocket};
+    ///
+    /// let ws = WebSocket::from_upgraded(Cursor::new(Vec::new()), &[], Connection::server())
+    ///     .with_keepalive(Keepalive::new().with_idle_timeout(Duration::from_secs(60)));
+    /// assert!(ws.connection().is_open());
+    /// ```
+    #[must_use]
+    pub fn with_keepalive(mut self, keepalive: crate::Keepalive) -> Self {
+        let connection = core::mem::replace(&mut self.connection, Connection::server());
+        self.connection = connection.with_keepalive(keepalive);
+        self
+    }
+
+    /// As [`send_text`](Self::send_text), with per-message
+    /// [`SendOptions`](crate::SendOptions): `uncompressed()` for a message
+    /// that carries a secret next to data an attacker chooses.
+    ///
+    /// # Errors
+    ///
+    /// As [`send_text`](Self::send_text).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    /// use ws_net::{Connection, SendOptions, blocking::WebSocket};
+    ///
+    /// let mut ws = WebSocket::from_upgraded(Cursor::new(Vec::new()), &[], Connection::server());
+    /// ws.send_text_with("token=s3cr3t", SendOptions::uncompressed())?;
+    /// assert_eq!(ws.get_ref().get_ref()[0], 0x81);
+    /// # Ok::<(), ws_net::blocking::Error>(())
+    /// ```
+    pub fn send_text_with(&mut self, text: &str, options: crate::SendOptions) -> Result<(), Error> {
+        self.connection.send_text_with(text, options)?;
+        self.flush()
+    }
+
+    /// As [`send_binary`](Self::send_binary), with per-message
+    /// [`SendOptions`](crate::SendOptions).
+    ///
+    /// # Errors
+    ///
+    /// As [`send_text`](Self::send_text).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    /// use ws_net::{Connection, SendOptions, blocking::WebSocket};
+    ///
+    /// let mut ws = WebSocket::from_upgraded(Cursor::new(Vec::new()), &[], Connection::server());
+    /// ws.send_binary_with(&[1], SendOptions::new())?;
+    /// assert_eq!(ws.get_ref().get_ref(), &[0x82, 0x01, 1]);
+    /// # Ok::<(), ws_net::blocking::Error>(())
+    /// ```
+    pub fn send_binary_with(
+        &mut self,
+        data: &[u8],
+        options: crate::SendOptions,
+    ) -> Result<(), Error> {
+        self.connection.send_binary_with(data, options)?;
+        self.flush()
+    }
+
     /// Sends an owned [`Message`].
     ///
     /// # Errors

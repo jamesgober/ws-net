@@ -28,8 +28,22 @@
   roles; the `deflate_message` fuzz target; `tests/deflate.rs` with the
   RFC 7692 section 7.2.3 examples and property tests.
 
+- `Sender::send_text_with` and `send_binary_with`;
+  `blocking::WebSocket::send_text_with`, `send_binary_with`, and
+  `with_keepalive`.
+
 ### Changed
 
+- A connection's timers start with the 5 s close timeout armed, without
+  `with_keepalive` (the documented default, which only held once a
+  keepalive was set): a peer that never answers the Close no longer holds
+  a connection made by `accept`, `Acceptor`, or the `blocking` module.
+- The input buffer is compacted only when half of it is read or when what
+  is left cannot be parsed, not on every feed once full.
+- `detach_message` returns `None` once input was fed, whatever the buffer
+  did.
+- A client fails a response whose `Upgrade` names anything but
+  `websocket`.
 - `ServerHandshake::response_fields` borrows the `Negotiated` it is given
   for as long as the fields live (the extension value is written there).
   Pass the decision's extensions; a temporary `&Negotiated::none()` kept

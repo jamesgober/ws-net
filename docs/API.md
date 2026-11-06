@@ -427,7 +427,7 @@ assert_eq!(client.output()[1] & 0x80, 0x80); // client frames are masked
 
 | Method | Description |
 |---|---|
-| `feed(&mut self, bytes: &[u8]) -> usize` | Copies as much of `bytes` as fits into the input buffer (64 KiB at most) and returns the count taken. Poll, then feed the rest. `#[must_use]`. |
+| `feed(&mut self, bytes: &[u8]) -> usize` | Copies as much of `bytes` as fits into the input buffer (at most `Limits::input_buffer` bytes buffered) and returns the count taken. Poll, then feed the rest. `#[must_use]`. |
 | `read_buf(&mut self) -> &mut [u8]` | Spare space at the end of the input buffer, to read a socket into without a copy. Never empty while the connection is waiting for input. |
 | `commit(&mut self, n: usize)` | Records that `n` bytes were written into `read_buf` (clamped to its size). |
 | `feed_eof(&mut self)` | Records that the transport closed. Before the closing handshake completed, the next poll reports `UnexpectedEof`. |

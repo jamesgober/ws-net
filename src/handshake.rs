@@ -111,6 +111,14 @@ fn list_has(value: &[u8], token: &[u8]) -> bool {
     contains_token([value], token)
 }
 
+/// Whether the comma list `value` is `websocket` alone (ASCII
+/// case-insensitive): a client fails a response whose `Upgrade` names
+/// anything else (RFC 6455 section 4.1).
+fn only_websocket(value: &[u8]) -> bool {
+    parse_net::list(value)
+        .is_ok_and(|l| !l.is_empty() && l.iter().all(|e| e.eq_ignore_ascii_case(b"websocket")))
+}
+
 /// A validated opening request, ready to be accepted.
 ///
 /// It carries what a server decides policy on: the [`target`](Self::target)
@@ -1233,7 +1241,10 @@ impl ClientHandshake {
         let mut elements = 0usize;
         for (name, value) in headers {
             if name.eq_ignore_ascii_case("upgrade") {
-                upgrade |= list_has(value, b"websocket");
+                if !only_websocket(value) {
+                    return Err(HandshakeError::MissingUpgrade);
+                }
+                upgrade = true;
             } else if name.eq_ignore_ascii_case("connection") {
                 connection |= list_has(value, b"upgrade");
             } else if name.eq_ignore_ascii_case("sec-websocket-accept") {

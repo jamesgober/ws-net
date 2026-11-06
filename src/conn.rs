@@ -19,6 +19,9 @@ use crate::{
 
 /// Smallest input allocation.
 const INPUT_MIN: usize = 4096;
+/// The most unread input that can still be waiting for more: a control
+/// frame (131 bytes with its mask) or a data frame's header (14 bytes).
+const WAITING_MAX: usize = 131;
 /// Output already written beyond this is compacted away eagerly.
 const OUT_COMPACT: usize = 64 * 1024;
 /// The most reassembly space reserved ahead of the bytes that have arrived.
@@ -216,7 +219,12 @@ impl Reader {
     fn spare(&mut self, cap: usize) -> &mut [u8] {
         if self.filled == self.input.len() {
             let len = self.input.len();
-            if self.pos > 0 && (self.pos >= len / 2 || len >= cap) {
+            // Compacting copies the unread bytes, so it waits until half
+            // the buffer is read, or until a full buffer holds too little
+            // to parse: then input is needed and must fit. A full buffer
+            // with more unread is parsed first, never copied per event.
+            let unread = self.filled - self.pos;
+            if self.pos > 0 && (self.pos >= len / 2 || (len >= cap && unread <= WAITING_MAX)) {
                 self.input.copy_within(self.pos..self.filled, 0);
                 self.filled -= self.pos;
                 self.pos = 0;
@@ -1033,9 +1041,9 @@ impl Connection {
         !self.writer.sent_close && !self.writer.failed && self.writer.sending.is_none()
     }
 
-    /// Copies as much of `bytes` into the input buffer as fits (64 KiB at
-    /// most at a time) and returns how many were taken. Poll, then feed the
-    /// rest.
+    /// Copies as much of `bytes` into the input buffer as fits (at most
+    /// [`Limits::input_buffer`] bytes are buffered) and returns how many
+    /// were taken. Poll, then feed the rest.
     ///
     /// # Examples
     ///
@@ -1064,6 +1072,8 @@ impl Connection {
         if taken > 0 {
             self.reader.arrived = true;
             self.reader.bytes_in = self.reader.bytes_in.saturating_add(taken as u64);
+            // `detach_message` gives nothing once input was fed.
+            self.reader.lent = None;
         }
         taken
     }
@@ -1098,6 +1108,7 @@ impl Connection {
         if added > 0 {
             self.reader.arrived = true;
             self.reader.bytes_in = self.reader.bytes_in.saturating_add(added as u64);
+            self.reader.lent = None;
         }
     }
 
@@ -1336,12 +1347,11 @@ fn poll_inner<'r>(
                 }
                 reader.message = None;
                 reader.delivered = true;
-                reader.messages_in = reader.messages_in.saturating_add(1);
                 if let (true, Some(c)) = (inflating, codec.as_deref_mut()) {
                     c.end_message();
-                    reader.lent = Some(Lent::Inflated(f.kind.into()));
-                    return inflated(&reader.msg, f.kind, writer);
+                    return inflated(reader, f.kind, writer);
                 }
+                reader.messages_in = reader.messages_in.saturating_add(1);
                 reader.lent = Some(Lent::Reassembled(f.kind.into()));
                 return Ok(match f.kind {
                     Kind::Text => Event::Text(&reader.text),
@@ -1470,9 +1480,7 @@ fn poll_inner<'r>(
                     c.end_message();
                 }
                 reader.delivered = true;
-                reader.messages_in = reader.messages_in.saturating_add(1);
-                reader.lent = Some(Lent::Inflated(kind.into()));
-                return inflated(&reader.msg, kind, writer);
+                return inflated(reader, kind, writer);
             }
 
             if header.opcode != Opcode::Continuation
@@ -1546,9 +1554,21 @@ fn poll_inner<'r>(
     }
 }
 
-/// The event for an inflated message in `msg`; text is validated here,
-/// once, whole (see `Codec::inflate` for why not in pieces).
-fn inflated<'r>(msg: &'r [u8], kind: Kind, writer: &mut Writer) -> Result<Event<'r>, WsError> {
+/// The event for an inflated message in the reassembly buffer. Text is
+/// validated here, once, whole (see `Codec::inflate` for why not in
+/// pieces); the message is counted and lent (for `detach_message`) only
+/// once it is valid.
+fn inflated<'r>(
+    reader: &'r mut Reader,
+    kind: Kind,
+    writer: &mut Writer,
+) -> Result<Event<'r>, WsError> {
+    if kind == Kind::Text && core::str::from_utf8(&reader.msg).is_err() {
+        return Err(writer.fail(WsError::InvalidUtf8));
+    }
+    reader.messages_in = reader.messages_in.saturating_add(1);
+    reader.lent = Some(Lent::Inflated(kind.into()));
+    let msg = &reader.msg;
     Ok(match kind {
         Kind::Text => match core::str::from_utf8(msg) {
             Ok(text) => Event::Text(text),
@@ -1867,7 +1887,8 @@ impl Connection {
         if !clock.armed {
             return Ok(Tick::Nothing);
         }
-        let now = now.as_u64().max(clock.now);
+        // `UNSET` marks a timer that is off; the latest time is one before.
+        let now = now.as_u64().min(UNSET - 1).max(clock.now);
         clock.now = now;
         if writer.failed || reader.received_close {
             // Closed, but the transport may still wait on a peer that is
@@ -2396,6 +2417,65 @@ impl Sender<'_> {
     /// ```
     pub fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), WsError> {
         self.writer.close(Some(code), reason)
+    }
+
+    /// As [`Connection::send_text_with`]: with per-message
+    /// [`SendOptions`], such as `uncompressed()` for a reply that carries a
+    /// secret.
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::send_text`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{Connection, Event, SendOptions};
+    ///
+    /// let mut conn = Connection::server();
+    /// let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']); // masked "hi"
+    /// let (event, mut sender) = conn.poll_split()?;
+    /// if let Event::Text(text) = event {
+    ///     sender.send_text_with(text, SendOptions::uncompressed())?;
+    /// }
+    /// assert_eq!(conn.output(), [0x81, 0x02, b'h', b'i']);
+    /// # Ok::<(), ws_net::WsError>(())
+    /// ```
+    pub fn send_text_with(&mut self, text: &str, options: SendOptions) -> Result<(), WsError> {
+        self.writer.send_message(
+            self.limits,
+            Kind::Text,
+            text.as_bytes(),
+            self.codec.as_deref_mut(),
+            options,
+        )
+    }
+
+    /// As [`Connection::send_binary_with`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::send_binary`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{Connection, SendOptions};
+    ///
+    /// let mut conn = Connection::server();
+    /// let (_, mut sender) = conn.poll_split()?;
+    /// sender.send_binary_with(&[7], SendOptions::new())?;
+    /// assert_eq!(conn.output(), [0x82, 0x01, 7]);
+    /// # Ok::<(), ws_net::WsError>(())
+    /// ```
+    pub fn send_binary_with(&mut self, data: &[u8], options: SendOptions) -> Result<(), WsError> {
+        self.writer.send_message(
+            self.limits,
+            Kind::Binary,
+            data,
+            self.codec.as_deref_mut(),
+            options,
+        )
     }
 
     /// As [`Connection::send_prepared`].

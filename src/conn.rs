@@ -429,8 +429,15 @@ impl Writer {
             .unwrap_or(usize::MAX)
             .max(1);
         if data.len() <= max {
-            // The common case, one frame: its size is the budget check.
-            self.check_data_room(self.frame_size(data.len()))?;
+            // The common case, one frame. While the queue is well under the
+            // budget, the largest header cannot make it overflow, so the
+            // exact frame size is only worked out near the limit.
+            let worst = (self.pending() as u64)
+                .saturating_add(data.len() as u64)
+                .saturating_add(crate::frame::MAX_HEADER_LEN as u64);
+            if worst > self.max_output {
+                self.check_data_room(self.frame_size(data.len()))?;
+            }
             self.pong_at = None;
             return self.raw_frame(first, fin, data);
         }

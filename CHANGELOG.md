@@ -11,6 +11,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- `Stats::data_frames_in`, for the fragments-per-message and
+  Pings-per-message ratios.
+
+### Fixed
+
+- A Ping, Pong, or Close whose payload arrived in pieces was counted in
+  `frames_in` once per `poll` until it was whole (a Ping fed a byte at a
+  time counted about 130 times), which could trip a frame-flood limit. A
+  frame now counts once, and the split property test checks every counter.
+
 ### Changed
 
 - `parse-net` 0.9.1. Extension parameters are read with its
@@ -18,6 +30,8 @@
   parameters (`permessage-deflate;`, `a;;b`) are now skipped instead of
   refused; everything accepted before is still accepted, with the same
   parameters.
+- `docs/PERFORMANCE.md`: the end-to-end echo benchmark over net-io's
+  reactor and blocking pool against tungstenite, on three platforms.
 
 ---
 

@@ -395,3 +395,23 @@ fn test_close_wait_after_failed_read_starts_at_next_tick() {
     assert_eq!(conn.on_time(Millis(25_000)), Ok(Tick::Nothing));
     assert!(conn.should_close_transport());
 }
+
+#[test]
+fn test_control_frame_split_counted_once() {
+    // A control frame waits for its whole payload, decoding its header on
+    // every poll; each wait counted it again in `frames_in`.
+    let mut wire = client_frame(0x9, true, b"ping payload");
+    wire.extend(client_frame(0x2, false, b"ab"));
+    wire.extend(client_frame(0x0, true, b"cd"));
+    let mut conn = Connection::server();
+    for byte in &wire {
+        assert_eq!(conn.feed(core::slice::from_ref(byte)), 1);
+        while !matches!(conn.poll(), Ok(Event::NeedInput)) {}
+    }
+    let stats = conn.stats();
+    assert_eq!(
+        (stats.frames_in, stats.pings_in, stats.messages_in),
+        (3, 1, 1)
+    );
+    assert_eq!(stats.data_frames_in(), 2);
+}

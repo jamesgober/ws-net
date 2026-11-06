@@ -97,6 +97,8 @@ Exit: Autobahn strict pass, fuzz 24 hours clean, soak 4 hours, every threat test
 - [ ] Real consumers end to end: LexerSketch Studio with keepalive; serve-net's WebSocket upgrade route; a gateway consumer using the policy, counters, wipe, and close-on-revocation contract.
 - [ ] Socket-level soak with net-io: written (`interop/net-io/tests/soak.rs`); blocked on net-io. In net-io 0.6.0 a session reply larger than one output buffer allocates new buffers on every flush and never reuses them: the heap grows without bound, and with the default buffer budget the server live-locks after a few seconds. Reported to net-io with a reproduction; ws-net needs no change (D-044).
 - [x] `docs/ARCHITECTURE.md`, `docs/PLATFORM-NOTES.md`.
+- [x] Abuse ratios from `Stats` (spec section 10.3): `Stats::data_frames_in`, fragments and Pings per message; `frames_in` counts a split control frame once (D-050).
+- [x] End-to-end results in `docs/PERFORMANCE.md` (hosted run, three platforms).
 
 Exit: two consumers end to end with no open P0 or P1 defect; API changes from feedback recorded in the decision log.
 
@@ -110,7 +112,7 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 - [ ] Small sends 12 to 24% behind 0.2.0 (D-033): try skipping the budget accounting while the output queue is well under its limit, or accounting once per flush instead of per frame. Close the gap or write the measured reason into `docs/STABILITY-1.0.md`.
 - [ ] The Linux 1 MiB receive rows of the hosted harness (0.19 binary, 0.64 text against tungstenite; not reproduced in WSL, where binary is 0.81 and text is ahead): find the cause or record it.
 - [x] Extension parameters on parse-net 0.9.1's optional-value parameter parser (D-045), replacing ws-net's own parameter loop; done in 0.8 (D-048).
-- [ ] permessage-deflate: in 1.0 only if the new first-party DEFLATE crate is on crates.io by this pass, otherwise 1.1, said in the readiness note (D-046).
+- [ ] permessage-deflate on compress-lib: in 1.0 if compress-lib is on crates.io before 0.9, otherwise 1.1, said in the readiness note (D-046, D-049). ws-net's API needs went to compress-lib on 2026-11-05.
 - [ ] The end-to-end benchmark's payloads above 1 KiB and the socket-level soak at full length (24 hours) once net-io 0.6.1 reuses output buffers (D-044).
 - [ ] Fresh security review of the whole crate.
 - [ ] `docs/STABILITY-1.0.md` draft as the 1.0 readiness note: what is done, what is open, the go/no-go list.

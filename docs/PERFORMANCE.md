@@ -96,6 +96,38 @@ through `Connection::client` about 2 to 2.6 times faster (OS key batches;
 `client_masked` uses a fixed seed and SHA-1 counter mode for
 reproducibility, `client_masked_os` the OS batches).
 
+## End to end over net-io
+
+`interop/net-io/examples/e2e.rs`: echo servers over loopback, and one
+client for all of them, each connection a thread doing round trips (send a
+message, read its echo). ws-net runs as a net-io 0.6 `Session` on the
+reactor (one worker per CPU) and on the blocking pool (80 workers);
+tungstenite 0.30.0 runs one thread per connection on `std::net`. Messages
+per second, 3 seconds per cell; the ratio is reactor over tungstenite.
+Hosted run 41917369553 on commit `cb2b264`.
+
+| Connections | Payload | Linux reactor | Linux pool | Linux tungstenite | Ratio | macOS ratio | Windows ratio |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 16 B | 27,611 | 29,718 | 29,923 | 0.92 | 0.90 | 0.95 |
+| 1 | 1 KiB | 26,333 | 28,826 | 28,637 | 0.92 | 1.14 | 0.96 |
+| 16 | 16 B | 129,444 | 123,170 | 120,961 | 1.07 | 1.17 | 0.85 |
+| 16 | 1 KiB | 124,875 | 119,056 | 119,348 | 1.05 | 0.85 | 0.85 |
+| 64 | 16 B | 132,747 | 121,454 | 116,190 | 1.14 | 1.13 | 0.84 |
+| 64 | 1 KiB | 127,217 | 116,972 | 115,483 | 1.10 | 0.96 | 0.78 |
+
+A round trip is two loopback system calls and two thread wake-ups each way,
+and ws-net's share of it is well under a microsecond (the tables above), so
+this measures the driver more than the engine. On Linux the reactor leads
+from 16 connections on (5 to 14%) and trails by 8% at one connection,
+where a thread blocked in `read` wakes sooner than a readiness loop. The
+blocking pool is level with tungstenite (0.99 to 1.05), as both are a
+thread in `read` per connection. On Windows the reactor runs at 0.78 to
+0.96 of thread-per-connection tungstenite; the gap is in the driver, since
+ws-net leads tungstenite on Windows in every engine row above. On macOS the cells move both ways (0.85 to 1.17) between
+neighboring rows, which reads as runner noise.
+Payloads stop at 1 KiB until net-io 0.6.1 reuses output buffers
+(`dev/PLAN.md` D-044); the larger rows join then.
+
 ## Memory
 
 From `tests/memory.rs` (a counting allocator, every platform in CI):

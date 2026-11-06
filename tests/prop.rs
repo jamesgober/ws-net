@@ -391,6 +391,13 @@ proptest! {
         let whole = drive(&mut a, &[&input], eof);
         let pieces = drive(&mut b, &split(&input, &cuts), eof);
         prop_assert_eq!(whole, pieces);
+        // The frame and message counters do not depend on splits either (a
+        // control frame whose payload arrives late counts once). `bytes_in`
+        // may: after a failure, `feed` takes nothing more.
+        let counts = |s: ws_net::Stats| {
+            (s.frames_in, s.messages_in, s.pings_in, s.pongs_in, s.closes_in, s.bytes_out)
+        };
+        prop_assert_eq!(counts(a.stats()), counts(b.stats()));
     }
 }
 

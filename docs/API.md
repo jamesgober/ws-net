@@ -780,11 +780,16 @@ pub struct Stats {
     pub messages_in: u64, pub messages_out: u64,
     pub pings_in: u64, pub pongs_in: u64, pub closes_in: u64,
 }
+impl Stats { pub const fn data_frames_in(&self) -> u64; }
 ```
 
 Counters for metrics and rate limiting, saturating at `u64::MAX`.
 `bytes_in` counts bytes taken by `feed` and `commit`; `bytes_out` bytes
-acknowledged by `advance_output`.
+acknowledged by `advance_output`. A frame counts once, when it is taken,
+however its bytes were split. `data_frames_in()` is `frames_in` less the
+Pings, Pongs, and Closes; `data_frames_in / messages_in` (fragments per
+message) and `pings_in / messages_in` flag an abusive peer sooner than byte
+rates, since a browser sends one frame per message and few Pings.
 
 ```rust
 let mut conn = ws_net::Connection::server();

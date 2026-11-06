@@ -1265,7 +1265,6 @@ fn poll_inner<'r>(
                 (Role::Client, Some(_)) => return Err(writer.fail(WsError::MaskedFrame)),
                 _ => {}
             }
-            reader.frames_in = reader.frames_in.saturating_add(1);
             if header.payload_len > limits.max_frame() {
                 return Err(writer.fail(WsError::FrameTooLarge));
             }
@@ -1280,6 +1279,9 @@ fn poll_inner<'r>(
                     }
                     return Ok(Event::NeedInput);
                 }
+                // Counted once whole: the header is decoded again on every
+                // poll until the payload is here.
+                reader.frames_in = reader.frames_in.saturating_add(1);
                 let start = reader.pos + header_len;
                 reader.pos = start + len;
                 let payload = reader.input.get_mut(start..start + len).unwrap_or(&mut []);
@@ -1317,6 +1319,7 @@ fn poll_inner<'r>(
                 }
             }
 
+            reader.frames_in = reader.frames_in.saturating_add(1);
             let kind = match (header.opcode, reader.message) {
                 (Opcode::Continuation, Some(kind)) => kind,
                 (Opcode::Continuation, None) => {

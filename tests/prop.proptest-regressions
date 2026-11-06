@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 77541aac817cf3fa47f5988e8183abdfd789776d6ed0d0c4ee01b838934b7ebc # shrinks to ping = 1, idle = 1, steps = [(1, false)]
+cc b5a9e14cc2e8048a0f80942f9701e9e97e03ada2fa9e8834a5974d39277632ff # shrinks to input = [137, 192, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68, 17, 34, 51, 68], cuts = [6], eof = false

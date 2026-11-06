@@ -14,7 +14,9 @@
 //!
 //! More knobs: `WS_NET_NETIO_SOAK_DRIVER=blocking` (the reactor otherwise),
 //! `WS_NET_NETIO_SOAK_TOP_BITS` (largest message 2^bits, 18 by default),
-//! `WS_NET_NETIO_SOAK_RECONNECT=N` (one operation in N closes and
+//! `WS_NET_NETIO_SOAK_WORKERS` (twice the connections on the blocking
+//! driver, 8 on the reactor), `WS_NET_NETIO_SOAK_RECONNECT=N` (one
+//! operation in N closes and
 //! reconnects, 1000 by default, 0 never; a host whose ephemeral ports are
 //! shared with other loopback churn needs a larger N, as each reconnect
 //! holds a port in TIME_WAIT for minutes on Windows).
@@ -188,6 +190,7 @@ fn soak_reactor_over_loopback() {
     } else {
         8
     };
+    let workers = env("WS_NET_NETIO_SOAK_WORKERS", u64::from(workers)) as u16;
     // A loaded machine can leave a client quiet for seconds: net-io's idle
     // timeout (5 s on the blocking driver) must not end a soak connection.
     let limits = Limits::builder()
@@ -205,7 +208,7 @@ fn soak_reactor_over_loopback() {
     // default): that is the baseline, not the connections.
     let baseline = HEAP.load(Ordering::Relaxed);
     println!(
-        "baseline {} KiB, {conns} connections, {secs} s, backlog {:?}",
+        "baseline {} KiB, {conns} connections, {secs} s, listener {addr}, backlog {:?}",
         baseline / 1024,
         server.listeners().first().and_then(|l| l.backlog)
     );

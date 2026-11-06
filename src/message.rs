@@ -60,6 +60,7 @@ impl Message {
 
 impl From<&str> for Message {
     fn from(text: &str) -> Self {
+        // budget: caller
         Self::Text(String::from(text))
     }
 }
@@ -72,6 +73,7 @@ impl From<String> for Message {
 
 impl From<&[u8]> for Message {
     fn from(data: &[u8]) -> Self {
+        // budget: caller
         Self::Binary(data.to_vec())
     }
 }

@@ -156,6 +156,7 @@ pub struct ServerHandshake {
 
 impl fmt::Debug for ServerHandshake {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // budget: max_head: the request's protocols, at most `MAX_PROTOCOLS`.
         f.debug_struct("ServerHandshake")
             // The path only: a query string can carry a token.
             .field("path", &self.target().split('?').next().unwrap_or(""))
@@ -402,6 +403,8 @@ impl ServerHandshake {
         };
         let len =
             target.len() + host.len() + origin.len() + joined(protocols, 1) + joined(extensions, 2);
+        // budget: max_head: the record holds parts of a head of at most
+        // `MAX_HEAD` bytes, in one allocation.
         let mut buf = String::with_capacity(len);
         let mut ends = [0usize; 5];
         let push = |bytes: &[u8], buf: &mut String| -> Result<(), HandshakeError> {
@@ -637,6 +640,7 @@ impl ServerHandshake {
         let end = out.len() - 2;
         let mut tail = Vec::new();
         for (name, value) in extra {
+            // budget: caller: the extra headers the caller passes
             tail.extend_from_slice(name.as_bytes());
             tail.extend_from_slice(b": ");
             tail.extend_from_slice(value);
@@ -731,6 +735,7 @@ impl ServerHandshake {
                 return Err(HandshakeError::InvalidProtocol);
             }
         }
+        // budget: max_head: fixed lines, the accept value, and one protocol from the request
         out.extend_from_slice(
             b"HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-accept: ",
         );
@@ -894,6 +899,7 @@ impl ClientHandshake {
     /// ```
     #[must_use]
     pub fn with_protocols(mut self, protocols: &[&str]) -> Self {
+        // budget: caller
         self.protocols = protocols.iter().map(ToString::to_string).collect();
         self
     }
@@ -912,6 +918,7 @@ impl ClientHandshake {
     /// ```
     #[must_use]
     pub fn with_origin(mut self, origin: &str) -> Self {
+        // budget: caller
         self.origin = Some(origin.to_string());
         self
     }
@@ -938,6 +945,7 @@ impl ClientHandshake {
     /// ```
     #[must_use]
     pub fn with_header(mut self, name: &str, value: &[u8]) -> Self {
+        // budget: caller
         self.headers.push((name.to_string(), value.to_vec()));
         self
     }
@@ -991,6 +999,7 @@ impl ClientHandshake {
         for (name, value) in &self.headers {
             check_extra(name, value)?;
         }
+        // budget: caller: the caller's host, path, and configuration
         out.extend_from_slice(b"GET ");
         out.extend_from_slice(path.as_bytes());
         out.extend_from_slice(b" HTTP/1.1\r\nhost: ");
@@ -1245,6 +1254,7 @@ impl Verified<'_> {
 /// `Cookie`). The key is public on the wire.
 impl fmt::Debug for ClientHandshake {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // budget: caller: the header names the caller configured
         let names: Vec<&str> = self.headers.iter().map(|(n, _)| n.as_str()).collect();
         f.debug_struct("ClientHandshake")
             .field("key", &self.key())

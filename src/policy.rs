@@ -162,6 +162,7 @@ impl OriginPolicy {
     /// }
     /// ```
     pub fn allow(origins: &[&str]) -> Result<Self, HandshakeError> {
+        // budget: caller
         let mut list = Vec::with_capacity(origins.len());
         for entry in origins {
             if web_origin(entry.as_bytes()).is_none() || entry.trim() != *entry {
@@ -332,6 +333,7 @@ impl AcceptPolicy {
         if preference.iter().any(|p| !is_token(p.as_bytes())) {
             return Err(HandshakeError::InvalidProtocol);
         }
+        // budget: caller
         self.protocols = preference.iter().map(ToString::to_string).collect();
         Ok(self)
     }
@@ -404,6 +406,7 @@ impl AcceptPolicy {
     /// # Ok::<(), HandshakeError>(())
     /// ```
     pub fn with_hosts(mut self, hosts: &[&str]) -> Result<Self, HandshakeError> {
+        // budget: caller
         let mut list = Vec::with_capacity(hosts.len());
         for entry in hosts {
             match parse_net::host::parse_uri_host_port(entry.as_bytes()) {
@@ -651,6 +654,7 @@ pub fn write_refusal(
         s if s < 500 => "Client Error",
         _ => "Server Error",
     };
+    // budget: fixed
     out.extend_from_slice(b"HTTP/1.1 ");
     out.extend_from_slice(alloc::format!("{status} {reason}").as_bytes());
     out.extend_from_slice(b"\r\ncontent-length: 0\r\nconnection: close\r\n");
@@ -800,6 +804,7 @@ impl Acceptor {
         let Some((handshake, head_len)) = self.reader.server(bytes)? else {
             return Ok(None);
         };
+        // budget: max_head: the 101 response (`write_response`)
         let mut response = Vec::with_capacity(160);
         let mut connection = handshake.accept(&self.policy, &mut response)?;
         let rest = bytes.get(head_len..).unwrap_or(&[]);

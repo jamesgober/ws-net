@@ -176,6 +176,7 @@ impl PreparedMessage {
             .unwrap_or(usize::MAX)
             .max(1);
         let count = data.len().div_ceil(max).max(1);
+        // budget: caller: the caller's message
         let mut frames = Vec::with_capacity(data.len() + count * 10);
         let mut pieces = data.chunks(max);
         for i in 0..count {

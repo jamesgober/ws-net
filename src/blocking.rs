@@ -119,6 +119,8 @@ fn read_some<S: Read>(stream: &mut S, buf: &mut Vec<u8>) -> Result<(), Error> {
         match stream.read(&mut chunk) {
             Ok(0) => return Err(Error::Io(io::ErrorKind::UnexpectedEof.into())),
             Ok(n) => {
+                // budget: max_head: the callers stop at `MAX_HEAD`
+                // (`HeadTooLarge`), so this holds at most that plus one read.
                 buf.extend_from_slice(chunk.get(..n).unwrap_or(&[]));
                 return Ok(());
             }
@@ -306,6 +308,8 @@ impl<S: Read + Write> WebSocket<S> {
         Self {
             stream,
             connection,
+            // budget: caller: the leftover the caller passes (from
+            // `accept_with`, at most `MAX_HEAD` plus one read).
             pending: leftover.to_vec(),
             taken: 0,
             start: Instant::now(),

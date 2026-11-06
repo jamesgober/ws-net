@@ -13,6 +13,10 @@
 
 ### Added
 
+- `tests/budget_audit.rs`: every heap growth site in `src/` names the
+  budget that bounds it in a `// budget:` note (78 sites: `max_message`,
+  `max_output`, `input_buffer`, the head limit, fixed sizes, and the
+  caller's own arguments); a new site without one fails CI.
 - `Stats::data_frames_in`, for the fragments-per-message and
   Pings-per-message ratios.
 

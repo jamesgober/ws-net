@@ -57,6 +57,14 @@ Every test named `test_attack_*` is in `tests/attacks.rs`.
 | T-29 | Information leaks through `Debug`, `Display`, or errors | no payload, key, or seed in either; `PreparedMessage` prints lengths only | `test_attack_debug_and_display_leak_no_payload` | none |
 | T-30 | Message-content attacks (JSON bombs) | out of scope (the application); ws-net bounds the size | n/a | n/a |
 
+Memory is bounded by configuration, never by input (NFR-5), and
+`tests/budget_audit.rs` keeps it so: every heap growth site in `src/` carries
+a `// budget:` note naming its guard. The peer reaches the ones guarded by
+`max_message` (reassembly), `max_output` and its 262-byte headroom (the
+automatic Pong and Close), `input_buffer`, and the 16 KiB head limit. The
+rest are fixed sizes, or sized by the caller's own arguments. A new site
+without a note fails CI.
+
 ## What ws-net does not defend
 
 Authentication and authorization, cross-connection rate limiting, message

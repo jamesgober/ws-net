@@ -53,6 +53,7 @@ impl MaskGen {
     /// reported at construction. `None` when the source fails.
     #[cfg(feature = "std")]
     pub(crate) fn from_os() -> Option<Self> {
+        // budget: fixed: `OS_BATCH`
         let mut pool = alloc::vec![0u8; OS_BATCH];
         mod_rand::tier3::fill_bytes(&mut pool).ok()?;
         Some(Self::Os { pool, used: 0 })
@@ -123,6 +124,7 @@ impl MaskGen {
             Self::Os { pool, used } => {
                 if *used + 4 > pool.len() {
                     if pool.len() < OS_BATCH {
+                        // budget: fixed: `OS_BATCH`
                         pool.resize(OS_BATCH, 0);
                     }
                     mod_rand::tier3::fill_bytes(pool).ok()?;

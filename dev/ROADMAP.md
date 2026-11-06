@@ -105,6 +105,7 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 ## v0.9.0 - Beta
 - [ ] API review against the plan and the parity matrix; every rustdoc example runnable; `docs/API.md` final.
 - [ ] Fuzzing 72 hours per target; soak 24 hours.
+- [x] Budget audit (spec section 10.3): `tests/budget_audit.rs` finds every heap growth site in `src/` and requires a `// budget:` note naming its guard; 78 sites (D-054). Done in 0.8.
 
 ### v0.9.x - Pre-1.0 polish (before any release candidate)
 - [ ] Revisit every accepted gap, deferred item, and missed target recorded in this file and the decision log; close it or record why it stays open.

@@ -54,7 +54,7 @@ What it guarantees, and how each guarantee is checked:
 
 | Guarantee | How it is held |
 |---|---|
-| The Autobahn TestSuite passes, strictly, in both roles. | Every case of sections 1 to 10 (301 cases) is OK in behavior and close behavior as a server and as a client, in CI on every change (`autobahn/check.py`; 3 cases are informational by the suite's own design). |
+| The Autobahn TestSuite passes, strictly, in both roles. | Every case of sections 1 to 13 (517 cases, permessage-deflate's 12 and 13 included with the `deflate` feature) is OK in behavior and close behavior as a server and as a client, in CI on every change (`autobahn/check.py`; 3 cases are informational by the suite's own design). |
 | Frames follow RFC 6455 exactly; every violation fails the connection with the right close code. | 111 Autobahn-style cases written as data (framing, ping/pong, reserved bits and opcodes, fragmentation, UTF-8, close codes, limits, masking direction, length encoding), each run whole, in pieces of every size from 1 to 15 bytes, and split in two at every point, with identical results. |
 | Text is validated as UTF-8 incrementally, across fragment boundaries, and fails at the first bad byte (1007). | A property test accepts a text message exactly when `std::str::from_utf8` accepts its bytes, however it is fragmented and split. |
 | Messages survive any fragmentation and any split of the wire bytes, with control frames interleaved. | Round-trip properties client to server and server to client, against the messages sent. |

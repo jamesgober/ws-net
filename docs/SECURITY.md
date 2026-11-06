@@ -81,11 +81,13 @@ guarantee belong in a key vault, not in WebSocket buffers.
 ## Conformance
 
 The Autobahn TestSuite (`crossbario/autobahn-testsuite:25.10.1`) runs in CI
-on every change, in both roles, sections 1 to 10, with a strict check
-(`autobahn/check.py`: every case OK in behavior and close behavior;
-NON-STRICT counts as a failure). Result since 0.5.0: 301 cases, 0 failures
-as a server and as a client. Cases 7.1.6, 7.13.1, and 7.13.2 are
-informational by the suite's own design.
+on every change, in both roles, with a strict check (`autobahn/check.py`:
+every case OK in behavior and close behavior; NON-STRICT counts as a
+failure). From 0.5.0 to 0.8.0, sections 1 to 10: 301 cases, 0 failures as a
+server and as a client. From 0.9, with the `deflate` feature, sections 1 to
+13 (12 and 13 are permessage-deflate): 517 cases, 0 failures in both roles.
+Cases 7.1.6, 7.13.1, and 7.13.2 are informational by the suite's own
+design.
 
 ## Fuzzing
 

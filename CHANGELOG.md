@@ -31,7 +31,12 @@
   refused; everything accepted before is still accepted, with the same
   parameters.
 - `docs/PERFORMANCE.md`: the end-to-end echo benchmark over net-io's
-  reactor and blocking pool against tungstenite, on three platforms.
+  reactor and blocking pool against tungstenite, on three platforms, and
+  the cause of the Linux 1 MiB receive rows (buffer placement on the hosted
+  runner; `bench-compare/examples/faults.rs` measures it).
+- Small sends: the exact frame size is worked out only near the output
+  budget, and each frame reserves once (client sends on Linux from 14% to
+  4 to 8% behind 0.2.0).
 
 ---
 

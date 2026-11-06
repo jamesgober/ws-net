@@ -109,8 +109,8 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 ### v0.9.x - Pre-1.0 polish (before any release candidate)
 - [ ] Revisit every accepted gap, deferred item, and missed target recorded in this file and the decision log; close it or record why it stays open.
 - [ ] Fresh performance pass against tungstenite and the other competitors on the current versions.
-- [ ] Small sends 12 to 24% behind 0.2.0 (D-033): try skipping the budget accounting while the output queue is well under its limit, or accounting once per flush instead of per frame. Close the gap or write the measured reason into `docs/STABILITY-1.0.md`.
-- [ ] The Linux 1 MiB receive rows of the hosted harness (0.19 binary, 0.64 text against tungstenite; not reproduced in WSL, where binary is 0.81 and text is ahead): find the cause or record it.
+- [x] Small sends behind 0.2.0 (D-033): the fast path skipping the exact size well under the budget and one capacity check per frame landed in 0.8; the remaining cost is the budget and counters, measured and recorded (D-053), to go into `docs/STABILITY-1.0.md`.
+- [x] The Linux 1 MiB receive rows of the hosted harness: a buffer-placement effect of the hosted Linux runner (the same code path 753 µs or 78 µs by heap layout alone, no page faults), not a ws-net cost; recorded (D-052).
 - [x] Extension parameters on parse-net 0.9.1's optional-value parameter parser (D-045), replacing ws-net's own parameter loop; done in 0.8 (D-048).
 - [ ] permessage-deflate on compress-lib: in 1.0 if compress-lib is on crates.io before 0.9, otherwise 1.1, said in the readiness note (D-046, D-049). ws-net's API needs went to compress-lib on 2026-11-05.
 - [ ] The end-to-end benchmark's payloads above 1 KiB and the socket-level soak at full length (24 hours) once net-io 0.6.1 reuses output buffers (D-044).

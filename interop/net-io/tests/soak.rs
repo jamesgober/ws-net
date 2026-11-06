@@ -35,6 +35,10 @@ struct Counting;
 
 static HEAP: AtomicUsize = AtomicUsize::new(0);
 
+/// The longest a 50 ms sleep overslept since the last sample, in ms: a gap
+/// of seconds means the process was not scheduled (the host, not net-io).
+static SCHED_GAP: AtomicU64 = AtomicU64::new(0);
+
 // SAFETY: forwards to the system allocator and only counts.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -218,6 +222,17 @@ fn soak_reactor_over_loopback() {
         })
         .collect();
 
+    {
+        let stop = Arc::clone(&stop);
+        thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let t = Instant::now();
+                thread::sleep(Duration::from_millis(50));
+                let over = (t.elapsed().as_millis() as u64).saturating_sub(50);
+                SCHED_GAP.fetch_max(over, Ordering::Relaxed);
+            }
+        });
+    }
     let every = Duration::from_secs((secs / 20).clamp(1, 60));
     let mut samples = Vec::new();
     while start.elapsed() < Duration::from_secs(secs) {
@@ -225,12 +240,13 @@ fn soak_reactor_over_loopback() {
         let heap = HEAP.load(Ordering::Relaxed);
         let stats = server.stats();
         println!(
-            "{:6} s: heap {:8} KiB, open {:5}, accepted {:7}, messages {:10}",
+            "{:6} s: heap {:8} KiB, open {:5}, accepted {:7}, messages {:10}, sched gap {:5} ms",
             start.elapsed().as_secs(),
             heap / 1024,
             stats.open,
             stats.accepted,
-            messages.load(Ordering::Relaxed)
+            messages.load(Ordering::Relaxed),
+            SCHED_GAP.swap(0, Ordering::Relaxed)
         );
         samples.push(heap);
         let now = start.elapsed().as_millis() as u64;

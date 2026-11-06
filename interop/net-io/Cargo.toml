@@ -12,7 +12,7 @@ license      = "Apache-2.0 OR MIT"
 
 [dependencies]
 ws-net = { path = "../.." }
-net-io = "0.6"
+net-io = "0.6.1"
 
 [dev-dependencies]
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }

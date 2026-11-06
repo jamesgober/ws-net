@@ -11,8 +11,6 @@
 //! E2E_SECS=10 cargo run --release --example e2e
 //! ```
 //!
-//! Payloads stop at 1 KiB until net-io's output-buffer reuse is fixed (a
-//! reply larger than one output buffer leaks buffers in net-io 0.6.0).
 //! Round trips measure latency as much as throughput; on a shared machine
 //! compare within one run only.
 
@@ -125,7 +123,7 @@ fn main() {
     );
     println!("|---:|---:|---:|---:|---:|---:|");
     for conns in [1, 16, 64] {
-        for payload in [16, 1024] {
+        for payload in [16, 1024, 64 * 1024] {
             let r = run(reactor_addr, conns, payload, secs);
             let b = run(pool_addr, conns, payload, secs);
             let t = run(tung_addr, conns, payload, secs);

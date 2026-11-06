@@ -27,9 +27,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use net_io::DriverKind;
+use net_io::{DriverKind, Limits, PrefixPolicy};
 use ws_net::{ClientHandshake, CloseCode, Message, blocking};
-use ws_net_interop_net_io::start;
+use ws_net_interop_net_io::start_with;
 
 struct Counting;
 
@@ -171,13 +171,25 @@ fn soak_reactor_over_loopback() {
     } else {
         DriverKind::Reactor
     };
-    // The blocking pool holds one connection per worker.
+    // The blocking pool holds one connection per worker, and a closing
+    // connection keeps its worker while its client already reconnects:
+    // twice the clients leaves room for the churn.
     let workers = if driver == DriverKind::Blocking {
-        conns as u16 + 8
+        (conns as u16).saturating_mul(2)
     } else {
         8
     };
-    let (server, addr) = start(driver, workers).unwrap();
+    // A loaded machine can leave a client quiet for seconds: net-io's idle
+    // timeout (5 s on the blocking driver) must not end a soak connection.
+    let limits = Limits::builder()
+        .max_connections(4096)
+        .max_per_source(4096, PrefixPolicy::DEFAULT)
+        .idle_timeout(Duration::from_secs(600))
+        // 128 KiB per blocking worker at least; the reactor's default.
+        .buffer_budget(512 << 20)
+        .build()
+        .unwrap();
+    let (server, addr) = start_with(driver, workers, limits).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let messages = Arc::new(AtomicU64::new(0));
     // net-io reserves its buffer pool up front (512 MiB on the reactor by

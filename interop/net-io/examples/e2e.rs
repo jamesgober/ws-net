@@ -3,8 +3,8 @@
 //! thread doing round trips (send one message, read its echo).
 //!
 //! - ws-net on net-io's reactor,
-//! - the same reactor with a 256 KiB input buffer (a 64 KiB message is
-//!   then lent from the input instead of reassembled),
+//! - the same reactor with 256 KiB of input buffer and output budget, so a
+//!   64 KiB message is lent whole and its echo leaves in one flush,
 //! - ws-net on net-io's blocking pool,
 //! - tungstenite 0.30.0, one thread per connection on `std::net`.
 //!
@@ -118,14 +118,22 @@ fn main() {
     };
     let (reactor, reactor_addr) = start_with(DriverKind::Reactor, cpus, limits()).unwrap();
     let (pool, pool_addr) = start_with(DriverKind::Blocking, 80, limits()).unwrap();
-    // The same reactor with a 256 KiB input buffer: a 64 KiB message then
-    // fits whole and is lent from the input instead of reassembled.
+    // The same reactor with room for a 64 KiB message: a 256 KiB input
+    // buffer (lent whole instead of reassembled) and a 256 KiB net-io output
+    // budget (the echo leaves in one flush, not two).
     let wide = ws_net::Limits::new().with_input_buffer(256 * 1024);
-    let (big, big_addr) = start_tuned(DriverKind::Reactor, cpus, limits(), wide).unwrap();
+    let roomy = Limits::builder()
+        .max_connections(4096)
+        .max_per_source(4096, PrefixPolicy::DEFAULT)
+        .idle_timeout(Duration::from_secs(600))
+        .output_budget(256 * 1024)
+        .build()
+        .unwrap();
+    let (big, big_addr) = start_tuned(DriverKind::Reactor, cpus, roomy, wide).unwrap();
     let tung_addr = tungstenite_server();
 
     println!(
-        "| Connections | Payload | ws-net on reactor | reactor, 256 KiB input | ws-net on blocking pool | tungstenite | reactor / tungstenite |"
+        "| Connections | Payload | ws-net on reactor | reactor, 256 KiB buffers | ws-net on blocking pool | tungstenite | reactor / tungstenite |"
     );
     println!("|---:|---:|---:|---:|---:|---:|---:|");
     for conns in [1, 16, 64] {

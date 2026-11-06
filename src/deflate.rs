@@ -815,7 +815,14 @@ pub(crate) mod on {
         /// Forgets every compressed byte this connection saw or sent.
         pub(crate) fn wipe(&mut self) {
             crate::conn::wipe_vec(&mut self.scratch);
-            // The engines' windows hold plaintext of earlier messages.
+            // The engines' windows hold plaintext of earlier messages: zero
+            // them before they go back to the allocator.
+            if let Some(tx) = self.tx.as_mut() {
+                tx.wipe();
+            }
+            if let Some(rx) = self.rx.as_mut() {
+                rx.wipe();
+            }
             self.tx = None;
             self.rx = None;
             self.end_message();

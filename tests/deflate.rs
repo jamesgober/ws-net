@@ -395,6 +395,16 @@ fn test_invalid_deflate_fails_1007() {
         &[0x07][..],                                       // block type 3
         &[0x00, 0x05, 0x00, 0x00, 0x00, b'H'],             // stored length and complement mismatch
         &[0xF3, 0x48, 0xCD, 0xC9, 0xC9, 0x07, 0x00, 0x01], // data after BFINAL
+        // A message that ends inside a block: a stored block of 1000 bytes
+        // with 5 sent, and "Hello" cut after its first code. The appended
+        // 00 00 FF FF must not complete either one.
+        &[0x00, 0xE8, 0x03, 0x17, 0xFC, b'h', b'e', b'l', b'l', b'o'],
+        &[0xF2, 0x48],
+        // "Hello" with the 00 00 FF FF tail left on (RFC 7692 section 7.2.1
+        // removes it): with the receiver's own tail, a stored block cut short.
+        &[
+            0xF2, 0x48, 0xCD, 0xC9, 0xC9, 0x07, 0x00, 0x00, 0x00, 0xFF, 0xFF,
+        ],
     ] {
         let mut srv = server();
         let _ = srv.feed(&frame(0xC2, bad));
@@ -403,7 +413,7 @@ fn test_invalid_deflate_fails_1007() {
     }
     // Inflated text that is not UTF-8 fails as text does.
     let mut srv = server();
-    let _ = srv.feed(&frame(0xC1, &[0x00, 0x01, 0x00, 0xFE, 0xFF, 0xFF]));
+    let _ = srv.feed(&frame(0xC1, &[0x00, 0x01, 0x00, 0xFE, 0xFF, 0xFF, 0x00]));
     assert_eq!(srv.poll().unwrap_err(), WsError::InvalidUtf8);
 }
 
@@ -467,7 +477,7 @@ fn test_inflated_size_budget_exact_and_one_over() {
 #[test]
 fn test_detach_after_invalid_inflated_text_gives_nothing() {
     let mut srv = server();
-    let _ = srv.feed(&frame(0xC1, &[0x00, 0x01, 0x00, 0xFE, 0xFF, 0xFF]));
+    let _ = srv.feed(&frame(0xC1, &[0x00, 0x01, 0x00, 0xFE, 0xFF, 0xFF, 0x00]));
     assert_eq!(srv.poll().unwrap_err(), WsError::InvalidUtf8);
     assert_eq!(srv.detach_message(&mut Vec::new()), None);
     assert_eq!(srv.stats().messages_in, 0);
@@ -494,7 +504,6 @@ fn test_window_bits_8_agreed_accepts_9_bit_peer() {
 }
 
 #[test]
-#[ignore = "needs compress-lib's per-call output growth fix (D-062)"]
 fn test_inflate_fed_byte_by_byte_is_linear() {
     // 4 MiB of one byte compresses to about 18 KB; inflating it one byte
     // per poll must cost about what one poll does, not one pass over the

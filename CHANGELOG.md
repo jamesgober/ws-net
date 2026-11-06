@@ -27,6 +27,10 @@
 - Autobahn TestSuite sections 12 and 13 (permessage-deflate) in CI, both
   roles; the `deflate_message` fuzz target; `tests/deflate.rs` with the
   RFC 7692 section 7.2.3 examples and property tests.
+- compress-lib 0.7: inflation is linear however the input is split, a
+  compressed message that ends inside a DEFLATE block (or keeps the
+  `00 00 FF FF` tail RFC 7692 removes) fails with 1007, and `wipe` zeroes
+  the compression windows.
 
 - `Sender::send_text_with` and `send_binary_with`;
   `blocking::WebSocket::send_text_with`, `send_binary_with`, and

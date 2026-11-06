@@ -1425,7 +1425,7 @@ On a connection that agreed:
   is `ReservedBits` (1002).
 - The compressor and decompressor are built on first use.
   `release_memory` drops each one that holds no context between messages;
-  `memory_in_use` counts them; `wipe` drops them with their windows.
+  `memory_in_use` counts them; `wipe` zeroes their windows and drops them.
 
 Memory per connection (compress-lib's figures): a decompressor without
 takeover holds its decode tables, about 12 KiB, and adds the window

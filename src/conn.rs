@@ -576,6 +576,8 @@ impl Writer {
             header[n..n + 4].copy_from_slice(&k);
             n += 4;
         }
+        // One capacity check for the whole frame, not one per append.
+        self.out.reserve(n + len);
         self.out.extend_from_slice(header.get(..n).unwrap_or(&[]));
         let start = self.out.len();
         self.out.extend_from_slice(payload);

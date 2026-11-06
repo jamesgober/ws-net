@@ -74,14 +74,14 @@ What it guarantees, and how each guarantee is checked:
 
 ```toml
 [dependencies]
-ws-net = "0.7"
+ws-net = "0.8"
 ```
 
 Without the standard library:
 
 ```toml
 [dependencies]
-ws-net = { version = "0.7", default-features = false }
+ws-net = { version = "0.8", default-features = false }
 ```
 
 <hr>

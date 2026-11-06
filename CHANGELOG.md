@@ -11,7 +11,23 @@
 
 ## [Unreleased]
 
+---
+
+## [0.8.0] - 2026-11-06
+
+Alpha: ws-net end to end on real transports (net-io's two drivers, tls-net)
+and against tungstenite on three platforms, so consumers can adopt it. No
+breaking API change.
+
 ### Added
+
+- `interop/net-io/`: ws-net as a net-io 0.6 `Session` (the mapping in
+  `docs/INTEGRATION.md`), end-to-end tests on both drivers in CI on three
+  platforms, the end-to-end echo benchmark against tungstenite (payloads
+  to 64 KiB), and a socket-level soak with a counting allocator.
+- `interop/tls/`: a ws-net client and server through two tls-net 0.5
+  sessions in memory, with the close order checked.
+- `docs/PLATFORM-NOTES.md`; a net-io section in `docs/INTEGRATION.md`.
 
 - `tests/budget_audit.rs`: every heap growth site in `src/` names the
   budget that bounds it in a `// budget:` note (78 sites: `max_message`,
@@ -438,7 +454,8 @@ Initial scaffold and repository bootstrap. No domain logic yet: this release est
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/jamesgober/ws-net/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/ws-net/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/ws-net/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/ws-net/compare/v0.4.0...v0.5.0

@@ -137,8 +137,26 @@ thread in `read` per connection. On Windows the reactor runs at 0.78 to
 0.96 of thread-per-connection tungstenite; the gap is in the driver, since
 ws-net leads tungstenite on Windows in every engine row above. On macOS the cells move both ways (0.85 to 1.17) between
 neighboring rows, which reads as runner noise.
-Payloads stop at 1 KiB until net-io 0.6.1 reuses output buffers
-(`dev/PLAN.md` D-044); the larger rows join then.
+With net-io 0.6.1 the benchmark includes 64 KiB messages (hosted run
+42175335960; the 16 B and 1 KiB rows of that run agree with the table above
+within runner noise). Messages per second at 64 connections:
+
+| 64 KiB, 64 connections | Linux | macOS | Windows |
+|---|---:|---:|---:|
+| ws-net on reactor, defaults | 33,209 | 19,729 | 33,418 |
+| ws-net on reactor, 256 KiB net-io output budget | 42,305 | 23,508 | 42,105 |
+| ws-net on blocking pool | 47,015 | 23,064 | 54,015 |
+| tungstenite, thread per connection | 53,518 | 25,100 | 63,851 |
+
+net-io's default output budget is 64 KiB per connection, so a 64 KiB echo
+(plus its frame header) leaves in two flushes with a writable wake-up
+between them. Raising it to 256 KiB is worth 19 to 27%. A 256 KiB ws-net
+input buffer alone, so that the message is lent whole instead of
+reassembled, changed nothing (run 42175181790: 21,936 against 22,244
+on Linux). The rest of the gap, 8 to 15% on the blocking pool, is the copy
+between each driver buffer and ws-net's, which a driver that owns its
+buffers pays. A server for large messages should size net-io's
+`output_budget` above its largest message.
 
 ## Memory
 

@@ -14,6 +14,7 @@ loop with a different owner of the bytes.
 - [http-net, blocking](#http-net-blocking)
 - [The blocking adapter on its own](#the-blocking-adapter-on-its-own)
 - [A connection engine (serve-net and others)](#a-connection-engine-serve-net-and-others)
+- [net-io](#net-io)
 - [A gateway: policy, counters, wipe, revocation](#a-gateway-policy-counters-wipe-revocation)
 - [TLS (tls-net)](#tls-tls-net)
 - [Memory per connection](#memory-per-connection)
@@ -124,6 +125,37 @@ upgraded socket with the loop above:
   `should_close_transport`; the close timeout (5 s by default) bounds the
   wait.
 - To zero a connection's buffers before dropping it, call `wipe()`.
+
+## net-io
+
+`interop/net-io/src/lib.rs` is ws-net as a net-io `Session` (an
+unpublished package, run in CI on three platforms). It is short enough to
+copy:
+
+- `on_data`: before the upgrade, `Acceptor::accept` on the input; after it,
+  feed every byte and echo (or handle) each message.
+- After each step, move ws-net's output into net-io's with
+  `push_partial` and `advance_output` the amount taken. Then return
+  `Step::Close` once `should_close_transport`, `Step::Write` while output
+  remains, else `Step::Read`.
+- `on_peer_closed`: `feed_eof`, poll, then write what is queued and close.
+- net-io's idle timeout: start the closing handshake (Close 1001) and
+  return `Step::Write`. On the blocking driver, returning `Step::Close` from
+  `on_timeout` closes without sending what the session queued.
+- `on_close`: `wipe`.
+
+Sizing, from the soak and the benchmark:
+
+- The blocking driver holds one connection per worker, and a closing
+  connection keeps its worker while its client reconnects. Give it more
+  workers than connections, and `buffer_budget` of at least 128 KiB per
+  worker.
+- net-io's `output_budget` (64 KiB by default) should exceed the largest
+  message. A 64 KiB echo under the default leaves in two flushes, which
+  costs about a fifth of large-message throughput (`docs/PERFORMANCE.md`).
+- net-io's idle timeout (5 s on the blocking driver) closes connections
+  that are only slow. Set it to the application's real idle limit, and
+  leave per-connection keepalive to ws-net's `Keepalive`.
 
 ## A gateway: policy, counters, wipe, revocation
 

@@ -113,10 +113,38 @@ fn measure(name: &str, iters: u32, mut f: impl FnMut() -> usize) {
     println!("| {name} | {per:.0} µs | {allocs:.1} | {kib:.0} KiB | {faults} |");
 }
 
+/// Plain memory, no WebSocket: 1 MiB copied in 64 KiB pieces from one
+/// 64 KiB buffer into a destination made by `dest`, as ws-net reassembles.
+fn copy_into(src: &[u8], mut dest: impl FnMut() -> Vec<u8>) -> usize {
+    let mut out = dest();
+    for _ in 0..16 {
+        out.extend_from_slice(src);
+    }
+    black_box(out.len())
+}
+
 fn main() {
     let iters = 300;
     println!("| Case | Time per message | Allocations | Bytes allocated | Minor faults |");
     println!("|---|---:|---:|---:|---:|");
+    let src = vec![0x5a_u8; 64 * 1024];
+    measure("memcpy: fresh 1 MiB each time", iters, || {
+        copy_into(&src, || Vec::with_capacity(1 << 20))
+    });
+    measure("memcpy: fresh 1 MiB + 4 KiB each time", iters, || {
+        copy_into(&src, || Vec::with_capacity((1 << 20) + 4096))
+    });
+    measure("memcpy: fresh 1 MiB + 64 B each time", iters, || {
+        copy_into(&src, || Vec::with_capacity((1 << 20) + 64))
+    });
+    let mut kept = Vec::with_capacity(1 << 20);
+    measure("memcpy: one 1 MiB buffer kept", iters, || {
+        kept.clear();
+        for _ in 0..16 {
+            kept.extend_from_slice(&src);
+        }
+        black_box(kept.len())
+    });
     for (kind, wire) in [("binary", large_binary()), ("text", large_text())] {
         // Each case must deliver the whole message every time.
         let len = receive(&mut Connection::server().with_limits(limits()), &wire);

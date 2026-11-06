@@ -1,7 +1,9 @@
 //! The echo server the Autobahn TestSuite's `fuzzingclient` mode tests
 //! (server role): one thread per connection through the blocking adapter,
 //! every Origin accepted (the suite is not a browser), and budgets raised
-//! to 64 MiB so the 9.x cases measure speed, not budgets.
+//! to 64 MiB so the 9.x cases measure speed, not budgets. Built with the
+//! `deflate` feature it accepts every permessage-deflate offer the 12.x
+//! and 13.x cases make, context takeover included.
 //!
 //! ```sh
 //! cargo run --release --example autobahn_server -- 127.0.0.1:9001
@@ -27,6 +29,12 @@ fn main() -> io::Result<()> {
     let policy = AcceptPolicy::new()
         .with_origins(OriginPolicy::any_origin())
         .with_limits(limits);
+    #[cfg(feature = "deflate")]
+    let policy = policy.with_deflate(
+        ws_net::DeflateConfig::new()
+            .with_server_context_takeover(true)
+            .with_client_context_takeover(true),
+    );
     for stream in listener.incoming() {
         let stream = stream?;
         let _ = stream.set_nodelay(true);

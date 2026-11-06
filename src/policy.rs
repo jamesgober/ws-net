@@ -272,6 +272,9 @@ pub struct AcceptPolicy {
     hosts: Vec<String>,
     /// Whether the endpoint is reached over TLS, when known.
     secure: Option<bool>,
+    /// What permessage-deflate offers to accept; `None` declines them.
+    #[cfg(feature = "deflate")]
+    deflate: Option<crate::DeflateConfig>,
 }
 
 /// What a policy decided for an acceptable request.
@@ -285,8 +288,10 @@ pub struct Decision<'a> {
     /// The subprotocol to select: the first of the policy's that the client
     /// offered.
     pub protocol: Option<&'a str>,
-    /// The extensions to accept (none in this version: every offer is
-    /// declined, which RFC 6455 allows).
+    /// The extensions to accept: permessage-deflate when the policy has
+    /// [`with_deflate`](AcceptPolicy::with_deflate) and the client offered
+    /// it acceptably, otherwise none (declining every offer, which RFC 6455
+    /// allows).
     pub extensions: Negotiated,
 }
 
@@ -301,6 +306,39 @@ impl AcceptPolicy {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Accepts permessage-deflate (RFC 7692, feature `deflate`): the first
+    /// offer, in the client's order, that `config` can satisfy. Offers with
+    /// unknown, repeated, or invalid parameters are declined, as RFC 7692
+    /// section 7 requires; a client that cannot be held to a client window
+    /// below 15 bits is declined when `config` asks for one. Without this,
+    /// every offer is declined.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{AcceptPolicy, DeflateConfig, ServerHandshake};
+    ///
+    /// let h = ServerHandshake::from_request("GET", "/", [
+    ///     ("Host", &b"a.example"[..]), ("Upgrade", b"websocket"), ("Connection", b"Upgrade"),
+    ///     ("Sec-WebSocket-Version", b"13"), ("Sec-WebSocket-Key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+    ///     ("Sec-WebSocket-Extensions", b"permessage-deflate; client_max_window_bits"),
+    /// ])?;
+    /// let policy = AcceptPolicy::new().with_deflate(DeflateConfig::new().with_client_max_window_bits(12));
+    /// let mut out = Vec::new();
+    /// let conn = h.accept(&policy, &mut out)?;
+    /// assert!(conn.negotiated().deflate().is_some());
+    /// assert!(out.windows(76).any(|w| w == &b"permessage-deflate; server_no_context_takeover; \
+    ///     client_no_context_takeover; client_max_window_bits=12"[..76]));
+    /// # Ok::<(), ws_net::HandshakeError>(())
+    /// ```
+    #[cfg(feature = "deflate")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "deflate")))]
+    #[must_use]
+    pub fn with_deflate(mut self, config: crate::DeflateConfig) -> Self {
+        self.deflate = Some(config);
+        self
     }
 
     /// Sets the Origin rule.
@@ -561,8 +599,21 @@ impl AcceptPolicy {
         }
         Ok(Decision {
             protocol,
-            extensions: Negotiated::none(),
+            extensions: self.negotiate(handshake),
         })
+    }
+
+    #[cfg_attr(not(feature = "deflate"), allow(clippy::unused_self))]
+    fn negotiate(&self, handshake: &ServerHandshake) -> Negotiated {
+        #[cfg(feature = "deflate")]
+        if let Some(config) = &self.deflate {
+            let offers = handshake.extensions().filter_map(Result::ok);
+            if let Some(agreed) = crate::deflate::accept(config, offers) {
+                return Negotiated::with_deflate(agreed);
+            }
+        }
+        let _ = handshake;
+        Negotiated::none()
     }
 }
 
@@ -598,7 +649,7 @@ impl ServerHandshake {
         out: &mut Vec<u8>,
     ) -> Result<Connection, HandshakeError> {
         let decision = policy.check(self)?;
-        self.write_response(decision.protocol, out)?;
+        self.write_response_with(decision.protocol, &decision.extensions, &[], out)?;
         let conn = Connection::server()
             .with_limits(policy.limits)
             .with_extensions(decision.extensions);

@@ -253,7 +253,7 @@ pub fn connect_with<S: Read + Write>(
         read_some(&mut stream, &mut buf)?;
         if let Some((verified, len)) = reader.client(handshake, &buf)? {
             let protocol = verified.protocol.map(String::from);
-            let connection = Connection::try_client()?;
+            let connection = Connection::try_client()?.with_extensions(verified.extensions);
             let leftover = buf.get(len..).unwrap_or(&[]);
             return Ok((
                 WebSocket::from_upgraded(stream, leftover, connection),

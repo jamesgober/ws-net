@@ -209,9 +209,9 @@ pub struct Param<'a> {
     pub value: Option<&'a str>,
 }
 
-/// The extensions in force on a connection. In this version no extension
-/// is ever negotiated, so it is always empty; permessage-deflate (feature
-/// `deflate`) adds its parameters here.
+/// The extensions in force on a connection: permessage-deflate's agreed
+/// parameters when it was negotiated (feature `deflate`), otherwise
+/// nothing.
 ///
 /// # Examples
 ///
@@ -221,7 +221,10 @@ pub struct Param<'a> {
 /// ```
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Negotiated {}
+pub struct Negotiated {
+    #[cfg(feature = "deflate")]
+    deflate: Option<crate::deflate::Agreed>,
+}
 
 impl Negotiated {
     /// Nothing negotiated.
@@ -231,7 +234,10 @@ impl Negotiated {
     /// See [`Negotiated`].
     #[must_use]
     pub const fn none() -> Self {
-        Self {}
+        Self {
+            #[cfg(feature = "deflate")]
+            deflate: None,
+        }
     }
 
     /// Whether nothing was negotiated.
@@ -241,7 +247,52 @@ impl Negotiated {
     /// See [`Negotiated`].
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        true
+        #[cfg(feature = "deflate")]
+        {
+            self.deflate.is_none()
+        }
+        #[cfg(not(feature = "deflate"))]
+        {
+            true
+        }
+    }
+
+    /// permessage-deflate's agreed parameters, when it was negotiated.
+    ///
+    /// # Examples
+    ///
+    /// See [`DeflateParams`](crate::DeflateParams).
+    #[cfg(feature = "deflate")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "deflate")))]
+    #[must_use]
+    pub fn deflate(&self) -> Option<&crate::DeflateParams> {
+        self.deflate.as_ref().map(|a| &a.params)
+    }
+
+    #[cfg(feature = "deflate")]
+    pub(crate) const fn with_deflate(agreed: crate::deflate::Agreed) -> Self {
+        Self {
+            deflate: Some(agreed),
+        }
+    }
+
+    #[cfg(feature = "deflate")]
+    pub(crate) fn agreed(&self) -> Option<&crate::deflate::Agreed> {
+        self.deflate.as_ref()
+    }
+
+    /// The `Sec-WebSocket-Extensions` value stating what was agreed, or
+    /// `None` when nothing was.
+    #[cfg_attr(not(feature = "deflate"), allow(clippy::unused_self))]
+    pub(crate) fn header_value(&self) -> Option<&[u8]> {
+        #[cfg(feature = "deflate")]
+        {
+            self.deflate.as_ref().map(crate::deflate::Agreed::value)
+        }
+        #[cfg(not(feature = "deflate"))]
+        {
+            None
+        }
     }
 }
 

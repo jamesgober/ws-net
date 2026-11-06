@@ -53,6 +53,15 @@ impl WsEcho {
             stage: Stage::Handshake(Acceptor::new()),
         }
     }
+
+    /// As [`new`](Self::new), with the connection's budgets.
+    #[must_use]
+    pub fn with_limits(limits: ws_net::Limits) -> Self {
+        let policy = ws_net::AcceptPolicy::new().with_limits(limits);
+        Self {
+            stage: Stage::Handshake(Acceptor::with_policy(policy)),
+        }
+    }
 }
 
 /// Feeds every input byte to `conn` and echoes each message it completes.
@@ -205,12 +214,26 @@ pub fn start_with(
     workers: u16,
     limits: Limits,
 ) -> Result<(Server, SocketAddr), NetError> {
+    start_tuned(driver, workers, limits, ws_net::Limits::new())
+}
+
+/// As [`start_with`], with ws-net's budgets for every connection.
+///
+/// # Errors
+///
+/// As [`start_with`].
+pub fn start_tuned(
+    driver: DriverKind,
+    workers: u16,
+    limits: Limits,
+    ws: ws_net::Limits,
+) -> Result<(Server, SocketAddr), NetError> {
     let server = ServerBuilder::new()
         .listener(net_io::ListenerSpec::tcp("127.0.0.1:0").name("ws"))
         .driver(driver)
         .workers(workers)
         .limits(limits)
-        .sessions(|_: &ConnectionInfo| WsEcho::new())
+        .sessions(move |_: &ConnectionInfo| WsEcho::with_limits(ws))
         .gate(AllowAll)
         .build()?;
     server.open_door()?;

@@ -3,6 +3,8 @@
 //! thread doing round trips (send one message, read its echo).
 //!
 //! - ws-net on net-io's reactor,
+//! - the same reactor with a 256 KiB input buffer (a 64 KiB message is
+//!   then lent from the input instead of reassembled),
 //! - ws-net on net-io's blocking pool,
 //! - tungstenite 0.30.0, one thread per connection on `std::net`.
 //!
@@ -26,7 +28,7 @@ use std::{
 
 use net_io::{DriverKind, Limits, PrefixPolicy};
 use ws_net::{ClientHandshake, CloseCode, Message, blocking};
-use ws_net_interop_net_io::start_with;
+use ws_net_interop_net_io::{start_tuned, start_with};
 
 /// A tungstenite echo server: one thread per connection.
 fn tungstenite_server() -> SocketAddr {
@@ -116,19 +118,24 @@ fn main() {
     };
     let (reactor, reactor_addr) = start_with(DriverKind::Reactor, cpus, limits()).unwrap();
     let (pool, pool_addr) = start_with(DriverKind::Blocking, 80, limits()).unwrap();
+    // The same reactor with a 256 KiB input buffer: a 64 KiB message then
+    // fits whole and is lent from the input instead of reassembled.
+    let wide = ws_net::Limits::new().with_input_buffer(256 * 1024);
+    let (big, big_addr) = start_tuned(DriverKind::Reactor, cpus, limits(), wide).unwrap();
     let tung_addr = tungstenite_server();
 
     println!(
-        "| Connections | Payload | ws-net on reactor | ws-net on blocking pool | tungstenite | reactor / tungstenite |"
+        "| Connections | Payload | ws-net on reactor | reactor, 256 KiB input | ws-net on blocking pool | tungstenite | reactor / tungstenite |"
     );
-    println!("|---:|---:|---:|---:|---:|---:|");
+    println!("|---:|---:|---:|---:|---:|---:|---:|");
     for conns in [1, 16, 64] {
         for payload in [16, 1024, 64 * 1024] {
             let r = run(reactor_addr, conns, payload, secs);
+            let w = run(big_addr, conns, payload, secs);
             let b = run(pool_addr, conns, payload, secs);
             let t = run(tung_addr, conns, payload, secs);
             println!(
-                "| {conns} | {payload} B | {r:.0}/s | {b:.0}/s | {t:.0}/s | {:.2} |",
+                "| {conns} | {payload} B | {r:.0}/s | {w:.0}/s | {b:.0}/s | {t:.0}/s | {:.2} |",
                 r / t
             );
         }
@@ -136,4 +143,5 @@ fn main() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let _ = reactor.shutdown(deadline);
     let _ = pool.shutdown(deadline);
+    let _ = big.shutdown(deadline);
 }

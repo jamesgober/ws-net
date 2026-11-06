@@ -173,6 +173,25 @@ fn main() {
                 if check(n) { 1 << 20 } else { 0 }
             },
         );
+        // One factor at a time against the crate's own benchmark (default
+        // limits, the wire cloned per iteration).
+        measure(
+            &format!("{kind}: ws-net, default limits, fresh"),
+            iters,
+            || {
+                let n = receive(&mut Connection::server(), &wire);
+                if check(n) { 1 << 20 } else { 0 }
+            },
+        );
+        measure(
+            &format!("{kind}: ws-net, fresh, wire cloned each time"),
+            iters,
+            || {
+                let copy = wire.clone();
+                let n = receive(&mut Connection::server().with_limits(limits()), &copy);
+                if check(n) { 1 << 20 } else { 0 }
+            },
+        );
         measure(&format!("{kind}: tungstenite, fresh socket"), iters, || {
             let n = tungstenite(&wire);
             if check(n) { 1 << 20 } else { 0 }

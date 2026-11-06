@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "ws-net"
-version = "0.7.0"
+version = "0.8.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -33,7 +33,7 @@ documentation = "https://docs.rs/ws-net"
 authors = ["James Gober <me@jamesgober.com>"]
 
 # CI tooling stays out of the published crate.
-exclude = ["autobahn/", "bench-compare/", "fuzz/", ".github/"]
+exclude = ["autobahn/", "bench-compare/", "fuzz/", "interop/", ".github/"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -61,7 +61,7 @@ std = ["dep:mod-rand"]
 # First party, no third-party dependencies of its own: the shared RFC 9110
 # grammar (tokens, OWS, lists, field-value checks, Origin, Host). Default
 # features off: no_std, no allocator.
-parse-net = { version = "0.9", default-features = false }
+parse-net = { version = "0.9.1", default-features = false }
 # First party, no dependencies: the OS cryptographic random source (its
 # tier 3) for masking seeds and nonces, feature `std` only.
 mod-rand = { version = "1", default-features = false, features = ["tier3"], optional = true }

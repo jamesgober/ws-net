@@ -70,21 +70,33 @@ the remaining cost is memory bandwidth.
 **Shortfalls, with their cause and plan:**
 
 - *1 MiB receive on Linux in the comparison harness* (ws-net 414 µs against
-  77 µs binary, 1.02 ms against 650 µs text). The crate's own benchmark
-  measures the same path on the same runner at 76 µs (binary) and 543 µs
-  (text), level with tungstenite, and macOS and Windows show no gap. The
-  harness builds a fresh connection per iteration, so the 1 MiB reassembly
-  buffer is a fresh allocation each time; on glibc that is a fresh
-  `mmap` whose pages fault on first touch. Plan (0.9.x pass): confirm with
-  allocation counts and `perf`, and if it is the page faults, reuse the
-  reassembly allocation across connections or grow it in place instead of
-  reserving the frame size up front.
-- *Small sends against 0.2.0:* about 12 to 24% slower on Linux and Windows
-  (about 2.4 ns per send on Linux; macOS measured 22% faster). This is the
-  price of the 0.4 output budget (one size check per send, the slow-consumer
-  defense) and the counters; the header writer was rewritten in 0.6 to keep
-  everything else at 0.2.0's cost. Recorded as an accepted cost
-  (`dev/PLAN.md` D-033) and re-checked in the 0.9.x pass.
+  77 µs binary, 1.02 ms against 650 µs text). This is where the hosted
+  Linux runner places the buffers, not ws-net's cost.
+  `bench-compare/examples/faults.rs` (in the benchmark workflow) times one
+  message with its allocations and minor page faults. On the Linux runner
+  (run 42167760017) the same code path, one allocation of the same 1 MiB,
+  took 753 µs in one case and 78 µs in the next, where earlier live
+  allocations had moved the heap. tungstenite took 82 µs, and 75 µs with
+  the reassembly buffer kept. None of these cases page-faults, and plain
+  `memcpy` into a fresh 1 MiB buffer takes 24 µs. tungstenite's text row
+  moves the same way between runs (676 µs and 1000 µs). macOS, Windows,
+  and a WSL Linux machine show no gap. No change is planned.
+  On every platform, a fresh 1 MiB buffer per message is the dearest part
+  of a large receive (Windows: 94 µs kept against 310 µs fresh, for ws-net
+  and tungstenite alike). A connection that receives a stream of large
+  messages keeps its buffer with `Limits::with_retain`, at the cost of
+  holding that much memory between messages.
+- *Small sends against 0.2.0:* the price of the 0.4 output budget (the
+  slow-consumer defense) and the counters, about 2.5 ns per send on Linux.
+  In 0.8 the exact frame size is only worked out near the budget, and each
+  frame makes one capacity check instead of two (`dev/PLAN.md` D-047,
+  D-053). Against 0.2.0 built in the same job, client sends moved from
+  +14% to +4 to +8% on Linux, and from +12% to +2% and -20% on macOS. Server
+  sends are still +38 to +52% on Linux, +4 to +21% on Windows, and -3 to
+  +18% on macOS. These runners move the untouched small-receive row by
+  +15 to +33% between runs, so a few percent either way is noise. Against
+  tungstenite in the same runs, ws-net sends 2.1 to 5.2 times as fast as a
+  server and 1.4 to 4.6 times as fast as a client.
 - *Small-message receive on macOS against 0.2.0* moved between +7.6% and
   +35% across runs while Linux and Windows stayed within 5%; treated as
   runner noise until a quieter measurement says otherwise.
@@ -95,6 +107,56 @@ UTF-8 pass instead of two), the raw-head handshake 1 to 33% faster
 through `Connection::client` about 2 to 2.6 times faster (OS key batches;
 `client_masked` uses a fixed seed and SHA-1 counter mode for
 reproducibility, `client_masked_os` the OS batches).
+
+## End to end over net-io
+
+`interop/net-io/examples/e2e.rs`: echo servers over loopback, and one
+client for all of them, each connection a thread doing round trips (send a
+message, read its echo). ws-net runs as a net-io 0.6 `Session` on the
+reactor (one worker per CPU) and on the blocking pool (80 workers);
+tungstenite 0.30.0 runs one thread per connection on `std::net`. Messages
+per second, 3 seconds per cell; the ratio is reactor over tungstenite.
+Hosted run 41917369553 on commit `cb2b264`.
+
+| Connections | Payload | Linux reactor | Linux pool | Linux tungstenite | Ratio | macOS ratio | Windows ratio |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 16 B | 27,611 | 29,718 | 29,923 | 0.92 | 0.90 | 0.95 |
+| 1 | 1 KiB | 26,333 | 28,826 | 28,637 | 0.92 | 1.14 | 0.96 |
+| 16 | 16 B | 129,444 | 123,170 | 120,961 | 1.07 | 1.17 | 0.85 |
+| 16 | 1 KiB | 124,875 | 119,056 | 119,348 | 1.05 | 0.85 | 0.85 |
+| 64 | 16 B | 132,747 | 121,454 | 116,190 | 1.14 | 1.13 | 0.84 |
+| 64 | 1 KiB | 127,217 | 116,972 | 115,483 | 1.10 | 0.96 | 0.78 |
+
+A round trip is two loopback system calls and two thread wake-ups each way,
+and ws-net's share of it is well under a microsecond (the tables above), so
+this measures the driver more than the engine. On Linux the reactor leads
+from 16 connections on (5 to 14%) and trails by 8% at one connection,
+where a thread blocked in `read` wakes sooner than a readiness loop. The
+blocking pool is level with tungstenite (0.99 to 1.05), as both are a
+thread in `read` per connection. On Windows the reactor runs at 0.78 to
+0.96 of thread-per-connection tungstenite; the gap is in the driver, since
+ws-net leads tungstenite on Windows in every engine row above. On macOS the cells move both ways (0.85 to 1.17) between
+neighboring rows, which reads as runner noise.
+With net-io 0.6.1 the benchmark includes 64 KiB messages (hosted run
+42175335960; the 16 B and 1 KiB rows of that run agree with the table above
+within runner noise). Messages per second at 64 connections:
+
+| 64 KiB, 64 connections | Linux | macOS | Windows |
+|---|---:|---:|---:|
+| ws-net on reactor, defaults | 33,209 | 19,729 | 33,418 |
+| ws-net on reactor, 256 KiB net-io output budget | 42,305 | 23,508 | 42,105 |
+| ws-net on blocking pool | 47,015 | 23,064 | 54,015 |
+| tungstenite, thread per connection | 53,518 | 25,100 | 63,851 |
+
+net-io's default output budget is 64 KiB per connection, so a 64 KiB echo
+(plus its frame header) leaves in two flushes with a writable wake-up
+between them. Raising it to 256 KiB is worth 19 to 27%. A 256 KiB ws-net
+input buffer alone, so that the message is lent whole instead of
+reassembled, changed nothing (run 42175181790: 21,936 against 22,244
+on Linux). The rest of the gap, 8 to 15% on the blocking pool, is the copy
+between each driver buffer and ws-net's, which a driver that owns its
+buffers pays. A server for large messages should size net-io's
+`output_budget` above its largest message.
 
 ## Memory
 

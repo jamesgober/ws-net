@@ -1,7 +1,7 @@
 # ws-net - API Reference
 
 > Complete reference for every public item in `ws-net`, with examples.
-> **Status: pre-1.0 (0.7.0), design locked.** Every item of the 1.0 surface
+> **Status: pre-1.0 (0.8.0), design locked.** Every item of the 1.0 surface
 > is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
 > lands in; items marked shipped are documented in full below. The surface is
 > frozen at `1.0.0`, after LexerSketch Studio ships on it. See
@@ -102,10 +102,10 @@ async runtime, a test harness, or memory.
 
 ```toml
 [dependencies]
-ws-net = "0.7"
+ws-net = "0.8"
 
 # no_std (alloc only)
-ws-net = { version = "0.7", default-features = false }
+ws-net = { version = "0.8", default-features = false }
 ```
 
 ## Quick start
@@ -780,11 +780,16 @@ pub struct Stats {
     pub messages_in: u64, pub messages_out: u64,
     pub pings_in: u64, pub pongs_in: u64, pub closes_in: u64,
 }
+impl Stats { pub const fn data_frames_in(&self) -> u64; }
 ```
 
 Counters for metrics and rate limiting, saturating at `u64::MAX`.
 `bytes_in` counts bytes taken by `feed` and `commit`; `bytes_out` bytes
-acknowledged by `advance_output`.
+acknowledged by `advance_output`. A frame counts once, when it is taken,
+however its bytes were split. `data_frames_in()` is `frames_in` less the
+Pings, Pongs, and Closes; `data_frames_in / messages_in` (fragments per
+message) and `pings_in / messages_in` flag an abusive peer sooner than byte
+rates, since a browser sends one frame per message and few Pings.
 
 ```rust
 let mut conn = ws_net::Connection::server();
@@ -1339,9 +1344,12 @@ pub const MAX_PARAMS: usize = 16;
 ```
 
 RFC 6455 section 9.1: `extension = token *( ";" param )`, `param = token [
-"=" ( token / quoted-string ) ]`. The list is read with `parse-net` (commas
-inside quoted strings do not split); a value may be absent; a quoted value
-must be a token once unquoted, and one with a backslash escape is refused.
+"=" ( token / quoted-string ) ]`. The list and the parameters are read
+with `parse-net` (commas inside quoted strings do not split); a value may
+be absent; there is no whitespace around `=`; empty parameters (`a;;b`)
+are skipped; a repeated name is kept, in order, for the extension's
+negotiation to judge; a quoted value must be a token once unquoted, and one
+with a backslash escape is refused.
 `ServerHandshake::from_request` validates every offer (at most 16 over all
 fields) and `extensions()` iterates them. In this version no extension is
 negotiated: every offer is declined (RFC 6455 allows it), and a client

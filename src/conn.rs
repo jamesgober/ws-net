@@ -121,6 +121,8 @@ impl Event<'_> {
     /// ```
     #[must_use]
     pub fn to_message(&self) -> Option<Message> {
+        // budget: max_message: a copy of a delivered message, or of a
+        // control payload (125 bytes).
         Some(match self {
             Event::Text(text) => Message::Text((*text).into()),
             Event::Binary(data) => Message::Binary(data.to_vec()),
@@ -217,6 +219,7 @@ impl Reader {
                 self.lent = None;
             } else if len < cap {
                 let grown = len.saturating_mul(2).clamp(INPUT_MIN.min(cap), cap);
+                // budget: input_buffer
                 self.input.resize(grown, 0);
             }
         }
@@ -256,6 +259,7 @@ impl Reader {
                 };
             }
             let c = core::str::from_utf8(seq).map_err(|_| WsError::InvalidUtf8)?;
+            // budget: max_message: `grow_text` made the room first
             text.push_str(c);
             *carry_len = 0;
         }
@@ -307,6 +311,7 @@ impl Reader {
 fn wipe_vec(v: &mut Vec<u8>) {
     v.iter_mut().for_each(|b| *b = 0);
     let spare = v.capacity() - v.len();
+    // budget: capacity: zeroes the spare capacity, never grows
     v.extend(core::iter::repeat_n(0, spare));
     let _ = black_box(&mut *v);
     v.clear();
@@ -429,8 +434,15 @@ impl Writer {
             .unwrap_or(usize::MAX)
             .max(1);
         if data.len() <= max {
-            // The common case, one frame: its size is the budget check.
-            self.check_data_room(self.frame_size(data.len()))?;
+            // The common case, one frame. While the queue is well under the
+            // budget, the largest header cannot make it overflow, so the
+            // exact frame size is only worked out near the limit.
+            let worst = (self.pending() as u64)
+                .saturating_add(data.len() as u64)
+                .saturating_add(crate::frame::MAX_HEADER_LEN as u64);
+            if worst > self.max_output {
+                self.check_data_room(self.frame_size(data.len()))?;
+            }
             self.pong_at = None;
             return self.raw_frame(first, fin, data);
         }
@@ -516,6 +528,7 @@ impl Writer {
         }
         self.check_data_room(message.len())?;
         self.pong_at = None;
+        // budget: max_output: `check_data_room` above
         self.out.extend_from_slice(message.as_bytes());
         self.messages_out = self.messages_out.saturating_add(1);
         Ok(())
@@ -569,6 +582,10 @@ impl Writer {
             header[n..n + 4].copy_from_slice(&k);
             n += 4;
         }
+        // One capacity check for the whole frame, not one per append.
+        // budget: max_output: every caller checked the frame against it,
+        // plus `CONTROL_HEADROOM` for the automatic Pong and Close.
+        self.out.reserve(n + len);
         self.out.extend_from_slice(header.get(..n).unwrap_or(&[]));
         let start = self.out.len();
         self.out.extend_from_slice(payload);
@@ -1126,6 +1143,7 @@ fn grow(msg: &mut Vec<u8>, need: usize, max_message: u64) -> Result<(), WsError>
         .min(budget.max(wanted));
     // Allocation failure fails the connection (1011) instead of aborting
     // the process; a smaller exact request is tried first.
+    // budget: max_message
     if msg.try_reserve_exact(target - len).is_err() {
         msg.try_reserve_exact(need)
             .map_err(|_| WsError::AllocationFailed)?;
@@ -1148,6 +1166,7 @@ fn grow_text(text: &mut String, need: usize, max_message: u64) -> Result<(), WsE
         .min(budget.max(wanted));
     // Allocation failure fails the connection (1011) instead of aborting
     // the process; a smaller exact request is tried first.
+    // budget: max_message
     if text.try_reserve_exact(target - len).is_err() {
         text.try_reserve_exact(need)
             .map_err(|_| WsError::AllocationFailed)?;
@@ -1209,6 +1228,7 @@ fn poll_inner<'r>(
                             {
                                 return Err(writer.fail(e));
                             }
+                            // budget: max_message: `grow` made the room first
                             reader.msg.extend_from_slice(chunk);
                         }
                         Kind::Text => {
@@ -1265,7 +1285,6 @@ fn poll_inner<'r>(
                 (Role::Client, Some(_)) => return Err(writer.fail(WsError::MaskedFrame)),
                 _ => {}
             }
-            reader.frames_in = reader.frames_in.saturating_add(1);
             if header.payload_len > limits.max_frame() {
                 return Err(writer.fail(WsError::FrameTooLarge));
             }
@@ -1280,6 +1299,9 @@ fn poll_inner<'r>(
                     }
                     return Ok(Event::NeedInput);
                 }
+                // Counted once whole: the header is decoded again on every
+                // poll until the payload is here.
+                reader.frames_in = reader.frames_in.saturating_add(1);
                 let start = reader.pos + header_len;
                 reader.pos = start + len;
                 let payload = reader.input.get_mut(start..start + len).unwrap_or(&mut []);
@@ -1317,6 +1339,7 @@ fn poll_inner<'r>(
                 }
             }
 
+            reader.frames_in = reader.frames_in.saturating_add(1);
             let kind = match (header.opcode, reader.message) {
                 (Opcode::Continuation, Some(kind)) => kind,
                 (Opcode::Continuation, None) => {
@@ -2035,6 +2058,7 @@ impl Connection {
                 Some(kind)
             }
             Lent::Input(kind, start, end) => {
+                // budget: max_message: the delivered message, into the caller's buffer
                 into.extend_from_slice(r.input.get(start..end).unwrap_or(&[]));
                 Some(kind)
             }

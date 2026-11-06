@@ -60,6 +60,7 @@ impl Message {
 
 impl From<&str> for Message {
     fn from(text: &str) -> Self {
+        // budget: caller
         Self::Text(String::from(text))
     }
 }
@@ -72,6 +73,7 @@ impl From<String> for Message {
 
 impl From<&[u8]> for Message {
     fn from(data: &[u8]) -> Self {
+        // budget: caller
         Self::Binary(data.to_vec())
     }
 }
@@ -127,4 +129,35 @@ pub struct Stats {
     pub pongs_in: u64,
     /// Close frames received.
     pub closes_in: u64,
+}
+
+impl Stats {
+    /// Data frames received (Text, Binary, and Continuation): the frames
+    /// that are not Ping, Pong, or Close.
+    ///
+    /// With [`messages_in`](Self::messages_in) and
+    /// [`pings_in`](Self::pings_in) it gives the two ratios that flag an
+    /// abusive peer sooner than byte rates: fragments per message
+    /// (`data_frames_in / messages_in`) and Pings per message
+    /// (`pings_in / messages_in`). A browser sends one frame per message
+    /// and few Pings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut conn = ws_net::Connection::server();
+    /// // A masked Ping, then "hi" in two fragments.
+    /// assert_eq!(conn.feed(&[0x89, 0x80, 0, 0, 0, 0]), 6);
+    /// assert_eq!(conn.feed(&[0x01, 0x81, 0, 0, 0, 0, b'h', 0x80, 0x81, 0, 0, 0, 0, b'i']), 14);
+    /// while !matches!(conn.poll(), Ok(ws_net::Event::NeedInput)) {}
+    /// let stats = conn.stats();
+    /// assert_eq!((stats.data_frames_in(), stats.messages_in, stats.pings_in), (2, 1, 1));
+    /// ```
+    #[must_use]
+    pub const fn data_frames_in(&self) -> u64 {
+        self.frames_in
+            .saturating_sub(self.pings_in)
+            .saturating_sub(self.pongs_in)
+            .saturating_sub(self.closes_in)
+    }
 }

@@ -324,6 +324,7 @@ impl HandshakeError {
     /// assert_eq!(out, b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
     /// ```
     pub fn write_response(&self, out: &mut alloc::vec::Vec<u8>) {
+        // budget: fixed
         out.extend_from_slice(match self.status() {
             426 => &b"HTTP/1.1 426 Upgrade Required\r\nsec-websocket-version: 13\r\n"[..],
             431 => b"HTTP/1.1 431 Request Header Fields Too Large\r\n",

@@ -90,22 +90,33 @@ Exit: NFR-4 (no allocation per message in steady state) and NFR-11 met; the comp
 
 Exit: Autobahn strict pass, fuzz 24 hours clean, soak 4 hours, every threat test passing.
 
-## v0.8.0 - Alpha
-- [ ] The tls-net example and test (moved from 0.7): ws-net over a tls-net session, the close order (ws-net Close, TLS close_notify, TCP close).
-- [ ] End-to-end benchmark over net-io's driver (moved from 0.7).
-- [ ] Real consumers end to end: LexerSketch Studio with keepalive; serve-net's WebSocket upgrade route; a gateway consumer using the policy, counters, wipe, and close-on-revocation contract.
-- [ ] Socket-level soak with net-io.
-- [ ] `docs/ARCHITECTURE.md`, `docs/PLATFORM-NOTES.md`.
+## v0.8.0 - Alpha (DONE except the move below)
+- [x] The tls-net example and test (moved from 0.7): ws-net over tls-net sessions in memory, the close order (ws-net Close, TLS close_notify, TCP close); `interop/tls/`, run in CI.
+- [x] End-to-end benchmark over net-io's driver (moved from 0.7): `interop/net-io/examples/e2e.rs`, ws-net on net-io's reactor and blocking pool against tungstenite 0.30.0 on `std::net`, the same client for all, in the hosted benchmark workflow. Payloads to 64 KiB since net-io 0.6.1, with the output-budget sizing (`docs/PERFORMANCE.md`).
+- [x] `interop/net-io/`: ws-net as a net-io `Session` on both drivers, end to end over loopback (every length class, 48 clients at once, Pings, the close order, a 403 refusal, a vanished peer, net-io's idle timeout as Close 1001), run in CI on three platforms.
+- [x] Socket-level soak with net-io (`interop/net-io/tests/soak.rs`): net-io 0.6.1 fixed the output-buffer leak (D-044); 4 hours per driver on Linux with 500 clients each. The Windows run waits for net-io 0.6.2 (listen backlog, D-055).
+- **Moved to 0.9 (reason: a consumer can only run on a published release, D-055):** real consumers end to end: LexerSketch Studio with keepalive; serve-net's WebSocket upgrade route; a gateway consumer using the policy, counters, wipe, and close-on-revocation contract.
+- [x] `docs/ARCHITECTURE.md`, `docs/PLATFORM-NOTES.md`.
+- [x] Abuse ratios from `Stats` (spec section 10.3): `Stats::data_frames_in`, fragments and Pings per message; `frames_in` counts a split control frame once (D-050).
+- [x] End-to-end results in `docs/PERFORMANCE.md` (hosted run, three platforms).
 
-Exit: two consumers end to end with no open P0 or P1 defect; API changes from feedback recorded in the decision log.
+Exit: two consumers end to end with no open P0 or P1 defect; API changes from feedback recorded in the decision log. (Met by the integrations above for the release; the consumer runs themselves are 0.9's first item.)
 
 ## v0.9.0 - Beta
+- [ ] Consumers end to end on 0.8 (moved from 0.8): serve-net's upgrade route, a gateway, the Studio; API changes from their feedback in the decision log.
+- [ ] The Windows socket soak on net-io 0.6.2.
 - [ ] API review against the plan and the parity matrix; every rustdoc example runnable; `docs/API.md` final.
 - [ ] Fuzzing 72 hours per target; soak 24 hours.
+- [x] Budget audit (spec section 10.3): `tests/budget_audit.rs` finds every heap growth site in `src/` and requires a `// budget:` note naming its guard; 78 sites (D-054). Done in 0.8.
 
 ### v0.9.x - Pre-1.0 polish (before any release candidate)
 - [ ] Revisit every accepted gap, deferred item, and missed target recorded in this file and the decision log; close it or record why it stays open.
 - [ ] Fresh performance pass against tungstenite and the other competitors on the current versions.
+- [x] Small sends behind 0.2.0 (D-033): the fast path skipping the exact size well under the budget and one capacity check per frame landed in 0.8; the remaining cost is the budget and counters, measured and recorded (D-053), to go into `docs/STABILITY-1.0.md`.
+- [x] The Linux 1 MiB receive rows of the hosted harness: a buffer-placement effect of the hosted Linux runner (the same code path 753 µs or 78 µs by heap layout alone, no page faults), not a ws-net cost; recorded (D-052).
+- [x] Extension parameters on parse-net 0.9.1's optional-value parameter parser (D-045), replacing ws-net's own parameter loop; done in 0.8 (D-048).
+- [ ] permessage-deflate on compress-lib: in 1.0 if compress-lib is on crates.io before 0.9, otherwise 1.1, said in the readiness note (D-046, D-049). ws-net's API needs went to compress-lib on 2026-11-05.
+- [x] The end-to-end benchmark's payloads above 1 KiB once net-io 0.6.1 reuses output buffers (D-044): 64 KiB rows in 0.8. The 24-hour socket soak is the 0.9 soak above.
 - [ ] Fresh security review of the whole crate.
 - [ ] `docs/STABILITY-1.0.md` draft as the 1.0 readiness note: what is done, what is open, the go/no-go list.
 - [ ] Release candidates with no API change for two weeks before 1.0.

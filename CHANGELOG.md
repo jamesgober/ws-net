@@ -13,6 +13,53 @@
 
 ---
 
+## [0.8.0] - 2026-11-06
+
+Alpha: ws-net end to end on real transports (net-io's two drivers, tls-net)
+and against tungstenite on three platforms, so consumers can adopt it. No
+breaking API change.
+
+### Added
+
+- `interop/net-io/`: ws-net as a net-io 0.6 `Session` (the mapping in
+  `docs/INTEGRATION.md`), end-to-end tests on both drivers in CI on three
+  platforms, the end-to-end echo benchmark against tungstenite (payloads
+  to 64 KiB), and a socket-level soak with a counting allocator.
+- `interop/tls/`: a ws-net client and server through two tls-net 0.5
+  sessions in memory, with the close order checked.
+- `docs/PLATFORM-NOTES.md`; a net-io section in `docs/INTEGRATION.md`.
+
+- `tests/budget_audit.rs`: every heap growth site in `src/` names the
+  budget that bounds it in a `// budget:` note (78 sites: `max_message`,
+  `max_output`, `input_buffer`, the head limit, fixed sizes, and the
+  caller's own arguments); a new site without one fails CI.
+- `Stats::data_frames_in`, for the fragments-per-message and
+  Pings-per-message ratios.
+
+### Fixed
+
+- A Ping, Pong, or Close whose payload arrived in pieces was counted in
+  `frames_in` once per `poll` until it was whole (a Ping fed a byte at a
+  time counted about 130 times), which could trip a frame-flood limit. A
+  frame now counts once, and the split property test checks every counter.
+
+### Changed
+
+- `parse-net` 0.9.1. Extension parameters are read with its
+  optional-value parameter parser, which replaces ws-net's own loop. Empty
+  parameters (`permessage-deflate;`, `a;;b`) are now skipped instead of
+  refused; everything accepted before is still accepted, with the same
+  parameters.
+- `docs/PERFORMANCE.md`: the end-to-end echo benchmark over net-io's
+  reactor and blocking pool against tungstenite, on three platforms, and
+  the cause of the Linux 1 MiB receive rows (buffer placement on the hosted
+  runner; `bench-compare/examples/faults.rs` measures it).
+- Small sends: the exact frame size is worked out only near the output
+  budget, and each frame reserves once (client sends on Linux from 14% to
+  4 to 8% behind 0.2.0).
+
+---
+
 ## [0.7.0] - 2026-11-05
 
 Hardening: ten fuzz targets run for 24 hours each, one attack test per
@@ -407,7 +454,8 @@ Initial scaffold and repository bootstrap. No domain logic yet: this release est
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/jamesgober/ws-net/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/ws-net/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/ws-net/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/ws-net/compare/v0.4.0...v0.5.0

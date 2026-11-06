@@ -352,6 +352,7 @@ impl FrameHeader {
     pub fn encode(&self, out: &mut Vec<u8>) -> Result<(), WsError> {
         let mut stack = [0u8; MAX_HEADER_LEN];
         let n = self.encode_to_slice(&mut stack)?;
+        // budget: fixed: `MAX_HEADER_LEN` bytes
         out.extend_from_slice(stack.get(..n).unwrap_or(&[]));
         Ok(())
     }

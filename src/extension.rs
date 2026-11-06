@@ -7,13 +7,16 @@
 //! extension-param = token [ "=" ( token / quoted-string ) ]
 //! ```
 //!
-//! The list itself (commas, quoted strings, whitespace) is read with
-//! `parse-net`; a parameter's value may be absent (`client_max_window_bits`,
-//! `server_no_context_takeover`), and a quoted value must be a token once
-//! unquoted. A quoted value with a backslash escape is refused: no
-//! registered extension needs one, and refusing it keeps every value a
-//! borrowed `&str`. At most [`MAX_OFFERS`] offers of [`MAX_PARAMS`]
-//! parameters each are accepted.
+//! The list and the parameters are read with `parse-net`'s list and
+//! optional-value parameter parsers. A parameter's value may be absent
+//! (`client_max_window_bits`, `server_no_context_takeover`), there is no
+//! whitespace around `=`, empty parameters (`a;;b`) are skipped, and a
+//! repeated name is kept: an extension's negotiation decides what a repeat
+//! means (RFC 7692 declines the offer). A quoted value must be a token once
+//! unquoted; one with a backslash escape is refused, since no registered
+//! extension needs one and refusing it keeps every value a borrowed `&str`.
+//! At most [`MAX_OFFERS`] offers of [`MAX_PARAMS`] parameters each are
+//! accepted.
 //!
 //! # Examples
 //!
@@ -29,7 +32,11 @@
 //! # Ok::<(), ws_net::HandshakeError>(())
 //! ```
 
-use parse_net::text::{is_token, parse_quoted, parse_token, skip_ows};
+use parse_net::{
+    DuplicatePolicy, Limits,
+    param::{self, OptionalParamIter, OptionalParams},
+    text::{Word, is_token, parse_token, skip_ows},
+};
 
 use crate::error::HandshakeError;
 
@@ -39,6 +46,11 @@ pub const MAX_OFFERS: usize = 16;
 
 /// The most parameters accepted in one offer.
 pub const MAX_PARAMS: usize = 16;
+
+/// How offer parameters are read: [`MAX_PARAMS`] at most, repeats kept.
+const PARAM_LIMITS: Limits = Limits::DEFAULT
+    .max_params(MAX_PARAMS as u16)
+    .duplicate_params(DuplicatePolicy::First);
 
 /// Parses a `Sec-WebSocket-Extensions` value into its offers, in order.
 /// The iterator yields `Err(InvalidExtensions)` once and stops if the value
@@ -124,8 +136,8 @@ impl<'a> Iterator for Offers<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Offer<'a> {
     name: &'a str,
-    /// The validated parameter text after the name.
-    params: &'a [u8],
+    /// The validated parameters after the name.
+    params: OptionalParams<'a>,
 }
 
 impl<'a> Offer<'a> {
@@ -154,23 +166,33 @@ impl<'a> Offer<'a> {
     /// ```
     #[must_use]
     pub fn params(&self) -> Params<'a> {
-        Params { rest: self.params }
+        Params {
+            inner: self.params.iter(),
+        }
     }
 }
 
 /// The parameters of an [`Offer`].
 #[derive(Clone, Debug)]
 pub struct Params<'a> {
-    rest: &'a [u8],
+    inner: OptionalParamIter<'a>,
 }
 
 impl<'a> Iterator for Params<'a> {
     type Item = Param<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (param, used) = parse_param(self.rest)?;
-        self.rest = self.rest.get(used..).unwrap_or(&[]);
-        Some(param)
+        let p = self.inner.next()?;
+        // Validated by `parse_offer`: names are tokens and every value is a
+        // plain token, so neither conversion fails.
+        let value = match p.value {
+            Some(word) => Some(utf8(word.as_plain()?)?),
+            None => None,
+        };
+        Some(Param {
+            name: utf8(p.name)?,
+            value,
+        })
     }
 }
 
@@ -230,62 +252,21 @@ fn utf8(bytes: &[u8]) -> Option<&str> {
 /// Parses one list element as an offer, validating every parameter.
 fn parse_offer(element: &[u8]) -> Option<Offer<'_>> {
     let (name, used) = parse_token(element).ok()?;
-    let params = element.get(used..)?;
-    let mut rest = params;
-    let mut count = 0usize;
-    loop {
-        let after = rest.get(skip_ows(rest)..).unwrap_or(&[]);
-        if after.is_empty() {
-            break;
-        }
-        let (_, used) = parse_param(rest)?;
-        count += 1;
-        if count > MAX_PARAMS {
-            return None;
-        }
-        rest = rest.get(used..).unwrap_or(&[]);
+    let rest = element.get(used..)?;
+    let (params, used) = param::parse_optional(rest, &PARAM_LIMITS).ok()?;
+    let after = rest.get(used..)?;
+    if skip_ows(after) != after.len() {
+        return None;
+    }
+    // RFC 6455 section 9.1: a quoted value is a token once unquoted.
+    let plain = |w: Word<'_>| w.as_plain().is_some_and(is_token);
+    if !params.iter().all(|p| p.value.is_none_or(plain)) {
+        return None;
     }
     Some(Offer {
         name: utf8(name)?,
         params,
     })
-}
-
-/// Parses `OWS ";" OWS token [ "=" value ]` at the start of `s`, and the
-/// bytes used. `None` at the end or on a malformed parameter.
-fn parse_param(s: &[u8]) -> Option<(Param<'_>, usize)> {
-    let mut at = skip_ows(s);
-    if s.get(at) != Some(&b';') {
-        return None;
-    }
-    at += 1;
-    at += skip_ows(s.get(at..)?);
-    let (name, used) = parse_token(s.get(at..)?).ok()?;
-    at += used;
-    let mut value = None;
-    if s.get(at) == Some(&b'=') {
-        at += 1;
-        let rest = s.get(at..)?;
-        let v = if rest.first() == Some(&b'"') {
-            let (quoted, used) = parse_quoted(rest).ok()?;
-            at += used;
-            // RFC 6455 section 9.1: a quoted value is a token once unquoted.
-            let plain = quoted.as_plain()?;
-            is_token(plain).then_some(plain)?
-        } else {
-            let (token, used) = parse_token(rest).ok()?;
-            at += used;
-            token
-        };
-        value = Some(utf8(v)?);
-    }
-    Some((
-        Param {
-            name: utf8(name)?,
-            value,
-        },
-        at,
-    ))
 }
 
 #[cfg(test)]
@@ -322,7 +303,6 @@ mod tests {
     fn test_extension_parse_malformed_refused() {
         for bad in [
             &b"; a"[..],
-            b"a;",
             b"a; =1",
             b"a; b =1",
             b"a; b= 1",
@@ -348,6 +328,19 @@ mod tests {
     fn test_extension_parse_empty_elements_skipped() {
         assert_eq!(offers(b" , a ,, b ").unwrap().len(), 2);
         assert!(offers(b"").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_extension_parse_empty_params_skipped_repeats_kept() {
+        let got = offers(b"a;, b;; c ;, d; p; P=1; p").unwrap();
+        let all: Vec<Vec<_>> = got
+            .iter()
+            .map(|(_, ps)| ps.iter().map(|p| (p.name, p.value)).collect())
+            .collect();
+        assert_eq!(got.iter().map(|o| o.0).collect::<Vec<_>>(), ["a", "b", "d"]);
+        assert_eq!(all[0], []);
+        assert_eq!(all[1], [("c", None)]);
+        assert_eq!(all[2], [("p", None), ("P", Some("1")), ("p", None)]);
     }
 
     #[test]

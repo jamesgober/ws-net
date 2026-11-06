@@ -181,7 +181,15 @@ impl Session for WsEcho {
         }
     }
 
-    fn on_close(&mut self, _info: &ConnectionInfo, _reason: CloseReason) {
+    fn on_close(&mut self, _info: &ConnectionInfo, reason: CloseReason) {
+        if reason.is_abortive() && std::env::var_os("WS_NET_NETIO_LOG_CLOSE").is_some() {
+            let state = match &self.stage {
+                Stage::Open(conn) => format!("{:?}", conn.state()),
+                Stage::Handshake(_) => "handshake".into(),
+                Stage::Refused => "refused".into(),
+            };
+            eprintln!("abortive close: {} in {state}", reason.as_str());
+        }
         if let Stage::Open(conn) = &mut self.stage {
             // Nothing of the conversation outlives the connection.
             conn.wipe();

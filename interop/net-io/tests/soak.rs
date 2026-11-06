@@ -14,7 +14,10 @@
 //!
 //! More knobs: `WS_NET_NETIO_SOAK_DRIVER=blocking` (the reactor otherwise),
 //! `WS_NET_NETIO_SOAK_TOP_BITS` (largest message 2^bits, 18 by default),
-//! `WS_NET_NETIO_SOAK_RECONNECT=0` (no close-and-reconnect).
+//! `WS_NET_NETIO_SOAK_RECONNECT=N` (one operation in N closes and
+//! reconnects, 1000 by default, 0 never; a host whose ephemeral ports are
+//! shared with other loopback churn needs a larger N, as each reconnect
+//! holds a port in TIME_WAIT for minutes on Windows).
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -132,12 +135,14 @@ fn client(
     epoch: Instant,
 ) {
     let mut rng = Rng(seed | 1);
+    let every = env("WS_NET_NETIO_SOAK_RECONNECT", 1000);
     let mut ws = connect(addr);
     while !stop.load(Ordering::Relaxed) {
         let ms = epoch.elapsed().as_millis() as u64;
         progress.done_at.store(ms, Ordering::Relaxed);
-        match rng.next() % 1000 {
-            0 if env("WS_NET_NETIO_SOAK_RECONNECT", 1) == 1 => {
+        let roll = rng.next();
+        match roll % 1000 {
+            _ if every > 0 && roll % every == 0 => {
                 // Close and come back.
                 progress.op.store(1 << 32, Ordering::Relaxed);
                 ws.close(CloseCode::NORMAL, "").unwrap();
@@ -200,8 +205,9 @@ fn soak_reactor_over_loopback() {
     // default): that is the baseline, not the connections.
     let baseline = HEAP.load(Ordering::Relaxed);
     println!(
-        "baseline {} KiB, {conns} connections, {secs} s",
-        baseline / 1024
+        "baseline {} KiB, {conns} connections, {secs} s, backlog {:?}",
+        baseline / 1024,
+        server.listeners().first().and_then(|l| l.backlog)
     );
     let progress: Arc<Vec<Progress>> = Arc::new((0..conns).map(|_| Progress::default()).collect());
     let start = Instant::now();

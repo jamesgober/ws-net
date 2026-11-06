@@ -415,3 +415,99 @@ fn test_control_frame_split_counted_once() {
     );
     assert_eq!(stats.data_frames_in(), 2);
 }
+
+/// 0.9 review: a connection with no keepalive set still has the 5 s close
+/// timeout, so a peer that never answers the Close releases the transport.
+#[test]
+fn test_close_timeout_without_keepalive() {
+    use ws_net::{CloseCode, Millis};
+    let mut conn = Connection::server();
+    conn.close(CloseCode::NORMAL, "").unwrap();
+    let n = conn.output().len();
+    conn.advance_output(n);
+    assert_eq!(conn.on_time(Millis(0)), Ok(ws_net::Tick::Nothing));
+    assert_eq!(conn.next_deadline(), Some(Millis(5_000)));
+    assert_eq!(conn.on_time(Millis(5_000)), Err(WsError::CloseTimeout));
+    assert!(conn.should_close_transport());
+    // An open connection with nothing armed costs no wake-ups.
+    let idle = Connection::server();
+    assert_eq!(idle.next_deadline(), None);
+}
+
+/// 0.9 review: a full input buffer is parsed, not copied, while it holds
+/// more than a frame header or a control frame: feeding after every event
+/// stays linear.
+#[test]
+fn test_full_input_not_compacted_per_event() {
+    let limits = Limits::new().with_input_buffer(256);
+    let mut conn = Connection::server().with_limits(limits);
+    let mut wire = Vec::new();
+    while wire.len() < 600 {
+        wire.extend_from_slice(&client_frame(0x2, true, b""));
+    }
+    let mut rest = &wire[..];
+    let mut events = 0;
+    let n = conn.feed(rest);
+    assert_eq!(n, 256);
+    rest = &rest[n..];
+    assert!(matches!(conn.poll(), Ok(Event::Binary(b"")))); // one 6-byte frame read
+    events += 1;
+    // 250 bytes unread: nothing fits yet, and nothing is copied.
+    assert_eq!(conn.feed(rest), 0);
+    loop {
+        match conn.poll().unwrap() {
+            Event::Binary(_) => events += 1,
+            Event::NeedInput => {
+                if rest.is_empty() {
+                    break;
+                }
+                let n = conn.feed(rest);
+                assert!(n > 0, "room once the buffer is parsed");
+                rest = &rest[n..];
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(events, wire.len() / 6);
+}
+
+/// 0.9 review: `detach_message` gives nothing once input was fed, however
+/// the buffer moved.
+#[test]
+fn test_detach_none_after_feed() {
+    let mut conn = Connection::server();
+    let _ = conn.feed(&client_frame(0x1, true, b"abc"));
+    assert!(matches!(conn.poll(), Ok(Event::Text("abc"))));
+    let _ = conn.feed(&client_frame(0x9, true, b""));
+    assert_eq!(conn.detach_message(&mut Vec::new()), None);
+}
+
+/// 0.9 review: the largest time does not switch the idle timeout off.
+#[test]
+fn test_idle_timeout_at_largest_time() {
+    use ws_net::{Keepalive, Millis};
+    let mut conn = Connection::server()
+        .with_keepalive(Keepalive::new().with_idle_timeout(Duration::from_secs(1)));
+    assert!(conn.on_time(Millis(0)).is_ok());
+    assert_eq!(conn.on_time(Millis(u64::MAX)), Err(WsError::IdleTimeout));
+}
+
+/// 0.9 review: a client fails a response whose `Upgrade` names more than
+/// `websocket` (RFC 6455 section 4.1).
+#[test]
+fn test_client_upgrade_must_be_websocket_alone() {
+    use ws_net::{ClientHandshake, HandshakeError};
+    let client = ClientHandshake::with_nonce(*b"the sample nonce");
+    let fields = |upgrade: &'static [u8]| {
+        [
+            ("Upgrade", upgrade),
+            ("Connection", &b"Upgrade"[..]),
+            ("Sec-WebSocket-Accept", b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+        ]
+    };
+    assert_eq!(client.verify(101, fields(b"WebSocket")), Ok(None));
+    assert_eq!(
+        client.verify(101, fields(b"websocket, h2c")),
+        Err(HandshakeError::MissingUpgrade)
+    );
+}

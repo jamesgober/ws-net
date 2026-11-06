@@ -54,7 +54,7 @@ What it guarantees, and how each guarantee is checked:
 
 | Guarantee | How it is held |
 |---|---|
-| The Autobahn TestSuite passes, strictly, in both roles. | Every case of sections 1 to 10 (301 cases) is OK in behavior and close behavior as a server and as a client, in CI on every change (`autobahn/check.py`; 3 cases are informational by the suite's own design). |
+| The Autobahn TestSuite passes, strictly, in both roles. | Every case of sections 1 to 13 (517 cases, permessage-deflate's 12 and 13 included with the `deflate` feature) is OK in behavior and close behavior as a server and as a client, in CI on every change (`autobahn/check.py`; 3 cases are informational by the suite's own design). |
 | Frames follow RFC 6455 exactly; every violation fails the connection with the right close code. | 111 Autobahn-style cases written as data (framing, ping/pong, reserved bits and opcodes, fragmentation, UTF-8, close codes, limits, masking direction, length encoding), each run whole, in pieces of every size from 1 to 15 bytes, and split in two at every point, with identical results. |
 | Text is validated as UTF-8 incrementally, across fragment boundaries, and fails at the first bad byte (1007). | A property test accepts a text message exactly when `std::str::from_utf8` accepts its bytes, however it is fragmented and split. |
 | Messages survive any fragmentation and any split of the wire bytes, with control frames interleaved. | Round-trip properties client to server and server to client, against the messages sent. |
@@ -82,6 +82,13 @@ Without the standard library:
 ```toml
 [dependencies]
 ws-net = { version = "0.8", default-features = false }
+```
+
+With permessage-deflate (RFC 7692), from 0.9:
+
+```toml
+[dependencies]
+ws-net = { version = "0.9", features = ["deflate"] }
 ```
 
 <hr>
@@ -232,7 +239,8 @@ cd bench-compare && cargo bench --bench compare    # against tungstenite
 - **Strict where the RFC is strict.** Payload lengths not in their shortest encoding are refused (RFC 6455 says the minimal encoding MUST be used, and accepting both forms gives one frame two encodings). A control frame using an extended length field is refused, whatever the field holds. The handshake head reader refuses bare CR or LF, line folding, and whitespace before a colon, and a request with two `Host` or two `Origin` fields, instead of picking one.
 - **Failures and refusals are different things.** A protocol violation fails the connection and queues the Close frame with its code; a call the protocol does not allow (an oversized Ping, a reserved close code, sending after Close) is refused and changes nothing. `WsError::close_code` tells them apart.
 - **Budgets come from headers, memory from bytes.** A frame or message over budget is refused from its header. A length in a header is a claim, so reassembly reserves at most 1 MiB ahead of the bytes that have actually arrived, even with the budgets lifted.
-- **No third-party dependencies.** The shared HTTP grammar (tokens, lists, field values, `Origin`, `Host`) comes from the first-party `parse-net`, and the OS cryptographic random source for masking seeds and nonces from the first-party `mod-rand` (feature `std`); neither has dependencies of its own. SHA-1 (only for the handshake, as RFC 6455 fixes it; it is not used as a security primitive) and strict canonical base64 are small private modules.
+- **No third-party dependencies.** The shared HTTP grammar (tokens, lists, field values, `Origin`, `Host`) comes from the first-party `parse-net`, the OS cryptographic random source for masking seeds and nonces from the first-party `mod-rand` (feature `std`), and DEFLATE for permessage-deflate from the first-party `compress-lib` (feature `deflate`); none has dependencies of its own. SHA-1 (only for the handshake, as RFC 6455 fixes it; it is not used as a security primitive) and strict canonical base64 are small private modules.
+- **Compression is opt-in and bounded.** permessage-deflate (feature `deflate`) is negotiated only when the policy or the client asks, with no context takeover by default, so attacker-chosen data in one message cannot probe a secret in another through compressed sizes (RFC 7692 section 8); `SendOptions::uncompressed()` opts a message out. Inflation stops at the message budget while it runs, so a small compressed bomb costs at most `max_message`.
 - **Fail closed on randomness.** If the OS random source fails, `Connection::client` returns a connection that refuses every send and `ClientHandshake::new` one that refuses to write its request; neither falls back to a predictable value or panics. `try_client` and `try_new` report the failure up front.
 
 <hr>

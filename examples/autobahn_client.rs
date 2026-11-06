@@ -1,6 +1,9 @@
 //! The client the Autobahn TestSuite's `fuzzingserver` mode tests (client
 //! role): asks the suite for its case count, runs every case as an echo
-//! client, then asks it to write the report.
+//! client, then asks it to write the report. Built with the `deflate`
+//! feature it offers permessage-deflate with context takeover allowed both
+//! ways, so the suite's server picks the parameters of each 12.x and 13.x
+//! case.
 //!
 //! ```sh
 //! docker run --rm --net=host -v "$PWD/autobahn:/config" -v "$PWD/autobahn/reports:/reports" \
@@ -23,6 +26,12 @@ fn open(
     let mut stream = TcpStream::connect(addr)?;
     let _ = stream.set_nodelay(true);
     let handshake = ClientHandshake::try_new()?;
+    #[cfg(feature = "deflate")]
+    let handshake = handshake.with_deflate(
+        ws_net::DeflateConfig::new()
+            .with_server_context_takeover(true)
+            .with_client_context_takeover(true),
+    );
     let mut request = Vec::new();
     handshake.write_request(addr, path, &mut request)?;
     io::Write::write_all(&mut stream, &request)?;
@@ -35,12 +44,14 @@ fn open(
             return Err("connection closed during the handshake".into());
         }
         buf.extend_from_slice(&chunk[..n]);
-        if let Some((_, len)) = reader.client(&handshake, &buf)? {
+        if let Some((verified, len)) = reader.client(&handshake, &buf)? {
             let limits = Limits::new()
                 .with_max_frame(64 << 20)
                 .with_max_message(64 << 20)
                 .with_max_output(u64::MAX);
-            let conn = Connection::try_client()?.with_limits(limits);
+            let conn = Connection::try_client()?
+                .with_limits(limits)
+                .with_extensions(verified.extensions);
             return Ok(blocking::WebSocket::from_upgraded(
                 stream,
                 &buf[len..],

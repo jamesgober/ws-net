@@ -20,7 +20,7 @@ export CARGO_TARGET_DIR="$HOME_DIR/target"
 TARGETS=("$@")
 if [ ${#TARGETS[@]} -eq 0 ]; then
     TARGETS=(frame_header connection_server connection_client connection_api server_head client_head
-             extension_parse origin_policy handshake_key differential_tungstenite)
+             extension_parse origin_policy handshake_key differential_tungstenite deflate_message)
 fi
 cargo +nightly fuzz build -O >/dev/null 2>&1 || { echo "build failed"; exit 1; }
 BIN="$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release"

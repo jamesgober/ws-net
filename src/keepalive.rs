@@ -258,14 +258,17 @@ pub(crate) struct Clock {
     pub(crate) now: u64,
 }
 
+/// A connection's timers start as [`Keepalive::new`]'s: no Ping, no idle
+/// or message timeout, and the 5 s close timeout, so a connection whose
+/// peer never answers its Close is released without any configuration.
 impl Default for Clock {
     fn default() -> Self {
         Self {
             ping: UNSET,
             idle: UNSET,
-            close: UNSET,
+            close: ms(Keepalive::new().close),
             message: UNSET,
-            armed: false,
+            armed: true,
             last_rx: UNSET,
             ping_sent: UNSET,
             close_sent: UNSET,

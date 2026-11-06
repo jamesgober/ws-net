@@ -2,10 +2,10 @@
 
 Usage: python3 autobahn/check.py autobahn/reports/servers/index.json
 
-The pass rule: every case of sections 1 to 10 has behavior OK and close
-behavior OK; INFORMATIONAL results are allowed and listed; NON-STRICT,
-FAILED, and UNIMPLEMENTED count as failures (sections 12 and 13, the
-permessage-deflate cases, are excluded until the deflate feature exists).
+The pass rule: every case, sections 1 to 13 (12 and 13 are
+permessage-deflate, run with the `deflate` feature), has behavior OK and
+close behavior OK; INFORMATIONAL results are allowed and listed;
+NON-STRICT, FAILED, and UNIMPLEMENTED count as failures.
 """
 
 import json

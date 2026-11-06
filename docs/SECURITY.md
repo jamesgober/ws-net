@@ -20,8 +20,10 @@ authority, intermediaries (proxy caches), and secrets inside messages.
 The crate forbids `unsafe` code (`#![forbid(unsafe_code)]`), has no
 third-party runtime dependency (parse-net and mod-rand are first party with
 no dependencies of their own), and has no reachable panic: `unwrap`,
-`expect`, `panic!`, `unreachable!`, and indexing that can fail are denied by
-the lint wall, and the fuzz targets check it.
+`expect`, `panic!`, and `unreachable!` are denied by the lint wall, peer
+input is read with `get` and checked slicing, the remaining fixed-size
+indexing (SHA-1, base64, frame headers) was checked by hand to stay in
+bounds, and the fuzz targets check all of it.
 
 ## Threats, defenses, tests
 
@@ -46,7 +48,9 @@ Every test named `test_attack_*` is in `tests/attacks.rs`.
 | T-16 | Idle connections | `with_idle_timeout` (1001); `release_memory` frees all heap | the same test; `test_attack_many_idle_connections_hold_no_heap` | 0 heap when idle |
 | T-17 | Slow consumers | `Limits::with_max_output` refuses a send past the budget (`OutputFull`); 262 bytes kept for Pong and Close | `test_attack_slow_consumer_refused_at_budget_close_still_fits`, a property under random sends | one comparison per send (about 2.4 ns, `docs/PERFORMANCE.md`) |
 | T-18 | Memory per connection across many connections | inline size at most 512 bytes; idle heap 0 after `release_memory`; every buffer budgeted | `test_attack_many_idle_connections_hold_no_heap`, `tests/memory.rs`, the soak | none |
-| T-19 to T-21 | Decompression bombs, compression side channels, compression context memory | permessage-deflate is not implemented; a client refuses a response that accepts an extension, and a server declines every offer | the extension tests | none (planned for 1.1 with its own defenses) |
+| T-19 | Decompression bomb: a small compressed message that inflates to gigabytes (the class of CVE-2026-1526 and CVE-2026-15709) | feature `deflate` only: inflation writes into the reassembly buffer with its output capped at `max_message` while it runs (1009), never checked after; the compressed size of a message is capped too (`max_message` plus a sixty-fourth plus 1 KiB) | `test_bomb_stops_at_the_budget` (16 MiB of zeros against a 1 MiB budget, memory checked on every poll), `test_inflated_size_budget_exact_and_one_over`, `prop_inflate_within_budget`, the `deflate_message` fuzz target, `test_inflate_fed_byte_by_byte_is_linear` | one comparison per output chunk; inflation costs O(input + output) per call on compress-lib 0.7 (4 MiB fed one byte per poll in under 3 s in a debug build; 0.6.0 was quadratic, D-062) |
+| T-20 | Compression side channels (CRIME, BREACH style: attacker-chosen data compressed with a secret leaks it through sizes) | `deflate` is not a default feature; a server declines unless its policy has `with_deflate`; no context takeover by default in either direction, so one message cannot probe another; `SendOptions::uncompressed()` per message; nothing under 256 bytes compressed by default | `test_send_options_and_min_size`, `test_no_takeover_back_reference_into_previous_message_fails` | the compression ratio of takeover |
+| T-21 | Compression memory across many connections | engines built on first use; no window kept without takeover; `release_memory` drops engines that hold no context; window bits capped by configuration; `memory_in_use` counts them | `test_memory_released_and_wiped` | `wipe` zeroes both engines' windows (compress-lib's `wipe`) before dropping them; about 12 KiB per decompressor and 330 KiB per level-1 compressor at 15 bits while in use (compress-lib's figures) |
 | T-22 | Invalid UTF-8 passed downstream | validated once per byte, failing at the first bad byte (1007), across fragments and reads | `test_attack_invalid_utf8_fails_1007`, Autobahn section 6, the UTF-8 property | linear |
 | T-23 | Log injection through close reasons | the reason is delivered verbatim and documented as peer text | `test_attack_close_reason_control_characters_delivered_verbatim` | none |
 | T-24 | Close-handshake hangs | `with_close_timeout` (5 s default); `should_close_transport` | the timeout test | 4 to 9 ns per tick |
@@ -54,7 +58,7 @@ Every test named `test_attack_*` is in `tests/attacks.rs`.
 | T-26 | A revoked session keeps its socket | `close(POLICY_VIOLATION, ..)` at any time, even mid-message; `wipe()` | `test_attack_revoked_session_close_1008_mid_message_then_input_ignored` | none |
 | T-27 | Cross-protocol bytes after the upgrade | strict frame rules fail at the first bad byte (1002) | `test_attack_http_bytes_after_upgrade_fail_1002` | none |
 | T-28 | Allocator exhaustion aborting the process | `try_reserve_exact` on reassembly growth: `AllocationFailed` (1011) | `tests/memory.rs` scenario 7 with a failing allocator; `test_attack_allocation_failure_closes_1011` | one branch per growth |
-| T-29 | Information leaks through `Debug`, `Display`, or errors | no payload, key, or seed in either; `PreparedMessage` prints lengths only | `test_attack_debug_and_display_leak_no_payload` | none |
+| T-29 | Information leaks through `Debug`, `Display`, or errors | no key or seed in either; errors, `Connection`, `ServerHandshake`, `ClientHandshake`, and `PreparedMessage` print no payload, query, or header value. The payload containers `Event`, `Message`, and `CloseFrame` print their payload, as their `Debug` exists to do: do not log them where the data is secret | `test_attack_debug_and_display_leak_no_payload` | none |
 | T-30 | Message-content attacks (JSON bombs) | out of scope (the application); ws-net bounds the size | n/a | n/a |
 
 Memory is bounded by configuration, never by input (NFR-5), and
@@ -79,11 +83,13 @@ guarantee belong in a key vault, not in WebSocket buffers.
 ## Conformance
 
 The Autobahn TestSuite (`crossbario/autobahn-testsuite:25.10.1`) runs in CI
-on every change, in both roles, sections 1 to 10, with a strict check
-(`autobahn/check.py`: every case OK in behavior and close behavior;
-NON-STRICT counts as a failure). Result since 0.5.0: 301 cases, 0 failures
-as a server and as a client. Cases 7.1.6, 7.13.1, and 7.13.2 are
-informational by the suite's own design.
+on every change, in both roles, with a strict check (`autobahn/check.py`:
+every case OK in behavior and close behavior; NON-STRICT counts as a
+failure). From 0.5.0 to 0.8.0, sections 1 to 10: 301 cases, 0 failures as a
+server and as a client. From 0.9, with the `deflate` feature, sections 1 to
+13 (12 and 13 are permessage-deflate): 517 cases, 0 failures in both roles.
+Cases 7.1.6, 7.13.1, and 7.13.2 are informational by the suite's own
+design.
 
 ## Fuzzing
 

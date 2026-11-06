@@ -111,6 +111,14 @@ fn list_has(value: &[u8], token: &[u8]) -> bool {
     contains_token([value], token)
 }
 
+/// Whether the comma list `value` is `websocket` alone (ASCII
+/// case-insensitive): a client fails a response whose `Upgrade` names
+/// anything else (RFC 6455 section 4.1).
+fn only_websocket(value: &[u8]) -> bool {
+    parse_net::list(value)
+        .is_ok_and(|l| !l.is_empty() && l.iter().all(|e| e.eq_ignore_ascii_case(b"websocket")))
+}
+
 /// A validated opening request, ready to be accepted.
 ///
 /// It carries what a server decides policy on: the [`target`](Self::target)
@@ -634,11 +642,16 @@ impl ServerHandshake {
         for (name, value) in extra {
             check_extra(name, value)?;
         }
-        let _ = extensions;
         self.write_response(protocol, out)?;
         // Insert the extra fields before the blank line that ends the head.
         let end = out.len() - 2;
         let mut tail = Vec::new();
+        if let Some(value) = extensions.header_value() {
+            // budget: max_head: one element of at most 128 bytes
+            tail.extend_from_slice(b"sec-websocket-extensions: ");
+            tail.extend_from_slice(value);
+            tail.extend_from_slice(b"\r\n");
+        }
         for (name, value) in extra {
             // budget: caller: the extra headers the caller passes
             tail.extend_from_slice(name.as_bytes());
@@ -653,25 +666,29 @@ impl ServerHandshake {
     /// The `101` response's header fields as `(name, value)` pairs, for an
     /// HTTP layer that writes the status line itself (http-net's
     /// `Response::switching_protocols`): `upgrade`, `connection`,
-    /// `sec-websocket-accept`, and `sec-websocket-protocol` when one is
-    /// selected.
+    /// `sec-websocket-accept`, `sec-websocket-protocol` when one is
+    /// selected, and `sec-websocket-extensions` when one was negotiated.
     ///
     /// # Errors
     ///
     /// [`HandshakeError::InvalidProtocol`] for a protocol that was not
     /// offered.
     ///
+    /// The fields borrow `extensions` (the extension value is written
+    /// there), so pass the decision's, as below, not a temporary.
+    ///
     /// # Examples
     ///
     /// ```
-    /// use ws_net::{ServerHandshake, extension::Negotiated};
+    /// use ws_net::{AcceptPolicy, ServerHandshake};
     ///
     /// let h = ServerHandshake::from_request("GET", "/", [
     ///     ("Host", &b"a"[..]), ("Upgrade", b"websocket"), ("Connection", b"Upgrade"),
     ///     ("Sec-WebSocket-Version", b"13"), ("Sec-WebSocket-Key", b"dGhlIHNhbXBsZSBub25jZQ=="),
-    ///     ("Sec-WebSocket-Protocol", b"chat"),
+    ///     ("Sec-WebSocket-Protocol", b"chat"), ("Origin", b"http://a"),
     /// ])?;
-    /// let fields: Vec<_> = h.response_fields(Some("chat"), &Negotiated::none())?.collect();
+    /// let decision = AcceptPolicy::new().with_protocols(&["chat"])?.check(&h)?;
+    /// let fields: Vec<_> = h.response_fields(decision.protocol, &decision.extensions)?.collect();
     /// assert_eq!(fields, [
     ///     ("upgrade", &b"websocket"[..]),
     ///     ("connection", b"upgrade"),
@@ -683,24 +700,25 @@ impl ServerHandshake {
     pub fn response_fields<'s>(
         &'s self,
         protocol: Option<&'s str>,
-        extensions: &Negotiated,
+        extensions: &'s Negotiated,
     ) -> Result<ResponseFields<'s>, HandshakeError> {
         if let Some(p) = protocol {
             if !self.offered(p) {
                 return Err(HandshakeError::InvalidProtocol);
             }
         }
-        let _ = extensions;
         Ok(ResponseFields {
             accept: self.accept.as_bytes(),
             protocol,
+            extensions: extensions.header_value(),
             next: 0,
         })
     }
 
     /// Writes the complete `101 Switching Protocols` response, selecting
-    /// `protocol` (which must be one the client offered) or none.
-    /// Extensions are never accepted. With `http-net`, send
+    /// `protocol` (which must be one the client offered) or none. No
+    /// extension is accepted; [`write_response_with`](Self::write_response_with)
+    /// writes a negotiated one. With `http-net`, send
     /// `Response::switching_protocols("websocket")` with a
     /// `sec-websocket-accept` header of [`accept_key`](Self::accept_key)
     /// (and `sec-websocket-protocol` if one was chosen) instead.
@@ -761,6 +779,7 @@ impl ServerHandshake {
 pub struct ResponseFields<'s> {
     accept: &'s [u8],
     protocol: Option<&'s str>,
+    extensions: Option<&'s [u8]>,
     next: u8,
 }
 
@@ -768,15 +787,22 @@ impl<'s> Iterator for ResponseFields<'s> {
     type Item = (&'static str, &'s [u8]);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let item = match self.next {
-            0 => ("upgrade", &b"websocket"[..]),
-            1 => ("connection", &b"upgrade"[..]),
-            2 => ("sec-websocket-accept", self.accept),
-            3 => ("sec-websocket-protocol", self.protocol?.as_bytes()),
-            _ => return None,
-        };
-        self.next += 1;
-        Some(item)
+        loop {
+            let item = match self.next {
+                0 => Some(("upgrade", &b"websocket"[..])),
+                1 => Some(("connection", &b"upgrade"[..])),
+                2 => Some(("sec-websocket-accept", self.accept)),
+                3 => self
+                    .protocol
+                    .map(|p| ("sec-websocket-protocol", p.as_bytes())),
+                4 => self.extensions.map(|e| ("sec-websocket-extensions", e)),
+                _ => return None,
+            };
+            self.next += 1;
+            if item.is_some() {
+                return item;
+            }
+        }
     }
 }
 
@@ -812,6 +838,9 @@ pub struct ClientHandshake {
     /// Set when the OS random source failed: the nonce is not random, so
     /// the request is never written.
     unusable: bool,
+    /// The permessage-deflate offer, when made.
+    #[cfg(feature = "deflate")]
+    deflate: Option<crate::DeflateConfig>,
 }
 
 impl ClientHandshake {
@@ -882,7 +911,34 @@ impl ClientHandshake {
             origin: None,
             headers: Vec::new(),
             unusable: false,
+            #[cfg(feature = "deflate")]
+            deflate: None,
         }
+    }
+
+    /// Offers permessage-deflate with `config`'s parameters (feature
+    /// `deflate`). Read the response with [`verify_full`](Self::verify_full),
+    /// [`HeadReader::client`], or the `blocking` module, which return what
+    /// was agreed for `connection`: `verify` and
+    /// `verify_head` check the agreement but return only the subprotocol.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{ClientHandshake, DeflateConfig};
+    ///
+    /// let h = ClientHandshake::with_nonce([0; 16]).with_deflate(DeflateConfig::new());
+    /// let mut out = Vec::new();
+    /// h.write_request("a", "/", &mut out)?;
+    /// assert!(out.windows(46).any(|w| w == b"permessage-deflate; server_no_context_takeover"));
+    /// # Ok::<(), ws_net::HandshakeError>(())
+    /// ```
+    #[cfg(feature = "deflate")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "deflate")))]
+    #[must_use]
+    pub fn with_deflate(mut self, config: crate::DeflateConfig) -> Self {
+        self.deflate = Some(config);
+        self
     }
 
     /// Offers subprotocols, in order of preference. Each must be a token;
@@ -1014,6 +1070,13 @@ impl ClientHandshake {
             out.extend_from_slice(origin.as_bytes());
             out.extend_from_slice(b"\r\n");
         }
+        #[cfg(feature = "deflate")]
+        if let Some(config) = &self.deflate {
+            let (value, len) = crate::deflate::offer(config);
+            out.extend_from_slice(b"sec-websocket-extensions: ");
+            out.extend_from_slice(value.get(..len).unwrap_or(&[]));
+            out.extend_from_slice(b"\r\n");
+        }
         if !self.protocols.is_empty() {
             out.extend_from_slice(b"sec-websocket-protocol: ");
             for (i, p) in self.protocols.iter().enumerate() {
@@ -1083,9 +1146,8 @@ impl ClientHandshake {
 
     /// Checks the server's response as [`verify`](Self::verify) does, and
     /// returns everything verified: the selected subprotocol and the
-    /// negotiated extensions. This client offers no extension in this
-    /// version, so any accepted extension is
-    /// [`HandshakeError::UnexpectedExtension`].
+    /// negotiated extensions (permessage-deflate when it was offered with
+    /// `with_deflate` (feature `deflate`) and accepted).
     ///
     /// # Errors
     ///
@@ -1114,10 +1176,10 @@ impl ClientHandshake {
     where
         I: IntoIterator<Item = (&'h str, &'h [u8])>,
     {
-        let protocol = self.verify(status, headers)?;
+        let (protocol, extensions) = self.verify_parts(status, headers)?;
         Ok(Verified {
             protocol,
-            extensions: Negotiated::none(),
+            extensions,
         })
     }
 
@@ -1132,7 +1194,10 @@ impl ClientHandshake {
     /// [`MissingUpgrade`](HandshakeError::MissingUpgrade),
     /// [`MissingConnectionUpgrade`](HandshakeError::MissingConnectionUpgrade),
     /// [`AcceptMismatch`](HandshakeError::AcceptMismatch),
-    /// [`UnexpectedExtension`](HandshakeError::UnexpectedExtension),
+    /// [`UnexpectedExtension`](HandshakeError::UnexpectedExtension) for an
+    /// extension that was not offered,
+    /// [`InvalidExtensions`](HandshakeError::InvalidExtensions) for an
+    /// acceptance that breaks RFC 7692 section 7,
     /// [`InvalidProtocol`](HandshakeError::InvalidProtocol) for a protocol
     /// that was not offered, or more than one `Sec-WebSocket-Protocol`.
     ///
@@ -1151,6 +1216,18 @@ impl ClientHandshake {
     where
         I: IntoIterator<Item = (&'h str, &'h [u8])>,
     {
+        self.verify_parts(status, headers)
+            .map(|(protocol, _)| protocol)
+    }
+
+    fn verify_parts<'h, I>(
+        &self,
+        status: u16,
+        headers: I,
+    ) -> Result<(Option<&str>, Negotiated), HandshakeError>
+    where
+        I: IntoIterator<Item = (&'h str, &'h [u8])>,
+    {
         if status != 101 {
             return Err(HandshakeError::NotSwitching(status));
         }
@@ -1160,19 +1237,26 @@ impl ClientHandshake {
         let mut accept_ok = false;
         let mut selected: Option<&str> = None;
         let mut protocol_fields = 0usize;
+        let mut extensions = Negotiated::none();
+        let mut elements = 0usize;
         for (name, value) in headers {
             if name.eq_ignore_ascii_case("upgrade") {
-                upgrade |= list_has(value, b"websocket");
+                if !only_websocket(value) {
+                    return Err(HandshakeError::MissingUpgrade);
+                }
+                upgrade = true;
             } else if name.eq_ignore_ascii_case("connection") {
                 connection |= list_has(value, b"upgrade");
             } else if name.eq_ignore_ascii_case("sec-websocket-accept") {
                 accepts += 1;
                 accept_ok = value == self.expected.as_bytes();
             } else if name.eq_ignore_ascii_case("sec-websocket-extensions") {
-                // None was offered, so any element (or a value that is not a
-                // list at all) is one the client did not ask for.
-                if parse_net::list(value).map_or(true, |l| !l.is_empty()) {
-                    return Err(HandshakeError::UnexpectedExtension);
+                for element in extension::parse(value) {
+                    // Without an offer, any element (or a value that is not
+                    // a list at all) is one the client did not ask for.
+                    let element = element.map_err(|e| self.unasked(e))?;
+                    elements += 1;
+                    extensions = self.agree(&element, elements)?;
                 }
             } else if name.eq_ignore_ascii_case("sec-websocket-protocol") {
                 protocol_fields += 1;
@@ -1198,7 +1282,41 @@ impl ClientHandshake {
         if protocol_fields > 1 {
             return Err(HandshakeError::InvalidProtocol);
         }
-        Ok(selected)
+        Ok((selected, extensions))
+    }
+
+    /// The error for a malformed extensions field: invalid against an
+    /// offer, unasked for without one.
+    #[cfg_attr(not(feature = "deflate"), allow(clippy::unused_self))]
+    fn unasked(&self, malformed: HandshakeError) -> HandshakeError {
+        #[cfg(feature = "deflate")]
+        if self.deflate.is_some() {
+            return malformed;
+        }
+        let _ = malformed;
+        HandshakeError::UnexpectedExtension
+    }
+
+    /// The agreement in the `nth` (from 1) accepted element: only the one
+    /// permessage-deflate offer can be accepted, once.
+    #[cfg_attr(not(feature = "deflate"), allow(clippy::unused_self))]
+    fn agree(
+        &self,
+        element: &extension::Offer<'_>,
+        nth: usize,
+    ) -> Result<Negotiated, HandshakeError> {
+        #[cfg(feature = "deflate")]
+        if let Some(config) = &self.deflate {
+            if element.name().eq_ignore_ascii_case("permessage-deflate") {
+                // Two acceptances would both claim RSV1 (RFC 7692 section 5).
+                if nth > 1 {
+                    return Err(HandshakeError::InvalidExtensions);
+                }
+                return crate::deflate::verify(config, element).map(Negotiated::with_deflate);
+            }
+        }
+        let _ = (element, nth);
+        Err(HandshakeError::UnexpectedExtension)
     }
 
     /// Checks the server's response from its raw head bytes, for use

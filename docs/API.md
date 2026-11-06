@@ -53,6 +53,7 @@
 - [`HandshakeError`](#handshakeerror)
 - [`write_refusal`](#write_refusal)
 - [The `extension` module](#the-extension-module)
+- [permessage-deflate (feature `deflate`)](#permessage-deflate)
 - [The `blocking` module](#the-blocking-module)
 - [`accept_key` and `AcceptKey`](#accept_key-and-acceptkey)
 - [The `frame` module](#the-frame-module)
@@ -106,6 +107,9 @@ ws-net = "0.8"
 
 # no_std (alloc only)
 ws-net = { version = "0.8", default-features = false }
+
+# permessage-deflate (RFC 7692), from 0.9
+ws-net = { version = "0.9", features = ["deflate"] }
 ```
 
 ## Quick start
@@ -405,7 +409,7 @@ machine. All methods are synchronous and never block.
 | `Connection::try_client() -> Result<Connection, WsError>` | As `client`, returning `WsError::RandomUnavailable` when the OS source fails. Feature `std`. |
 | `Connection::client_with_seed(seed: [u8; 32]) -> Connection` | The connecting end, masking keys derived from a 32-byte secret seed. The seed must be unpredictable to the peer (RFC 6455 section 5.3); a fixed seed is for tests. |
 | `Connection::with_limits(self, limits: Limits) -> Connection` | Replaces the [budgets](#limits). |
-| `with_extensions(self, negotiated: Negotiated) -> Connection`, `negotiated(&self) -> &Negotiated` | What the handshake negotiated; set by `accept`, `ServerHandshake::accept`, and `ClientHandshake::connection` (always empty until permessage-deflate). |
+| `with_extensions(self, negotiated: Negotiated) -> Connection`, `negotiated(&self) -> &Negotiated` | What the handshake negotiated; set by `accept`, `ServerHandshake::accept`, and `ClientHandshake::connection`. With [permessage-deflate](#permessage-deflate) the connection compresses and inflates by the agreement. |
 
 ```rust
 use ws_net::{Connection, Limits, Role};
@@ -423,7 +427,7 @@ assert_eq!(client.output()[1] & 0x80, 0x80); // client frames are masked
 
 | Method | Description |
 |---|---|
-| `feed(&mut self, bytes: &[u8]) -> usize` | Copies as much of `bytes` as fits into the input buffer (64 KiB at most) and returns the count taken. Poll, then feed the rest. `#[must_use]`. |
+| `feed(&mut self, bytes: &[u8]) -> usize` | Copies as much of `bytes` as fits into the input buffer (at most `Limits::input_buffer` bytes buffered) and returns the count taken. Poll, then feed the rest. `#[must_use]`. |
 | `read_buf(&mut self) -> &mut [u8]` | Spare space at the end of the input buffer, to read a socket into without a copy. Never empty while the connection is waiting for input. |
 | `commit(&mut self, n: usize)` | Records that `n` bytes were written into `read_buf` (clamped to its size). |
 | `feed_eof(&mut self)` | Records that the transport closed. Before the closing handshake completed, the next poll reports `UnexpectedEof`. |
@@ -618,7 +622,7 @@ assert_eq!(conn.stats().bytes_out, 1004);
 | `Sender::{send_text, send_binary, send_ping, send_pong, close, send_prepared}` | The `Connection` rules and budget. |
 | `detach_message(&mut self, into: &mut Vec<u8>) -> Option<MessageKind>` | Right after a `Text` or `Binary` event, moves its bytes into `into`: a buffer swap for reassembled messages (no copy), one copy for single-frame ones. `None` otherwise, or after more input was fed. |
 | `send(&mut self, message: &Message) -> Result<(), WsError>` | Sends an owned [`Message`](#message-and-messagekind). |
-| `send_text_with(&mut self, text, options: SendOptions)`, `send_binary_with(&mut self, data, options)` | Per-message [`SendOptions`](#preparedmessage): `uncompressed()` for messages carrying secrets. No effect on the wire until compression exists. |
+| `send_text_with(&mut self, text, options: SendOptions)`, `send_binary_with(&mut self, data, options)` | Per-message [`SendOptions`](#preparedmessage): `uncompressed()` for messages carrying secrets, `compressed()` to compress whatever the size. No effect on the wire without [permessage-deflate](#permessage-deflate). |
 | `send_prepared(&mut self, message: &PreparedMessage) -> Result<(), WsError>` | Appends a [prepared message](#preparedmessage); server role only. |
 
 ```rust
@@ -712,11 +716,15 @@ pub struct PreparedMessage { /* private */ }
 | `PreparedMessage::text(text: &str)`, `binary(data: &[u8])` | Unmasked frames encoded once, split at the default send-frame size. |
 | `text_with(text, limits: &Limits)`, `binary_with(data, limits)` | Split at `limits.send_frame()`. |
 | `as_bytes(&self) -> &[u8]`, `len`, `is_empty`, `payload_len` | Inspection. |
+| `with_deflate(self, config: &DeflateConfig)`, `compressed_len(&self) -> Option<usize>` | Feature `deflate`: adds a form compressed once without context, sent to connections that agreed on `server_no_context_takeover` with a window at least as large; kept only when smaller. |
 
 `SendOptions` (`new`, `uncompressed`, `compressed`, `is_uncompressed`;
-`#[non_exhaustive]`, `Copy`, `Default`) chooses compression per message;
-until permessage-deflate exists every message goes uncompressed, and code
-that asks for `uncompressed()` keeps that guarantee afterwards.
+`#[non_exhaustive]`, `Copy`, `Default`) chooses compression per message.
+The default compresses when [permessage-deflate](#permessage-deflate) was
+negotiated, the message is at least `min_size` (256 bytes by default), and
+compressing makes it smaller; `uncompressed()` never compresses;
+`compressed()` compresses whatever the size. Without a negotiated
+compression every option sends the message as it is.
 
 `Connection::send_prepared` appends the frames with one copy. It is refused
 for a client (frames must be masked with fresh keys), after a Close, during
@@ -941,7 +949,7 @@ impl core::error::Error for WsError {}
 
 | Variant | Meaning | `close_code()` |
 |---|---|---|
-| `ReservedBits` | RSV1-3 set. | 1002 |
+| `ReservedBits` | RSV1-3 set, except RSV1 on the first frame of a data message with permessage-deflate. | 1002 |
 | `ReservedOpcode` | Opcode 0x3-0x7 or 0xB-0xF. | 1002 |
 | `FragmentedControl` | A control frame without FIN. | 1002 |
 | `ControlTooLong` | A received control frame over 125 bytes. | 1002 |
@@ -963,6 +971,7 @@ impl core::error::Error for WsError {}
 | `CloseTimeout` | The peer did not answer our Close in time; nothing more sent. | 1006 (never sent) |
 | `MessageTimeout` | A data message stayed incomplete past the message timeout; Close 1008 queued. | 1008 |
 | `AllocationFailed` | Memory for an incoming message could not be allocated (the system is out of memory; the message was within budget); Close 1011 queued instead of the process aborting. | 1011 |
+| `InvalidCompressedData` | A compressed message (permessage-deflate) is not valid DEFLATE: a bad block, a back-reference beyond the window or into a message the window does not hold, data after the final block. | 1007 |
 | `RandomUnavailable` | A refused call: this client has no masking keys, because the OS random source failed when `Connection::client` ran. Use `try_client`. | `None` |
 
 `close_code()` is the failure's status code, or `None` for a refused call,
@@ -1338,7 +1347,7 @@ assert!(out.ends_with(b"retry-after: 5\r\n\r\n"));
 pub fn parse(value: &[u8]) -> Offers<'_>;             // Item = Result<Offer<'_>, HandshakeError>
 pub struct Offer<'a>;                                  // name(), params()
 pub struct Param<'a> { pub name: &'a str, pub value: Option<&'a str> }
-#[non_exhaustive] pub struct Negotiated;               // none(), is_empty()
+#[non_exhaustive] pub struct Negotiated;               // none(), is_empty(), deflate()
 pub const MAX_OFFERS: usize = 16;
 pub const MAX_PARAMS: usize = 16;
 ```
@@ -1351,10 +1360,10 @@ are skipped; a repeated name is kept, in order, for the extension's
 negotiation to judge; a quoted value must be a token once unquoted, and one
 with a backslash escape is refused.
 `ServerHandshake::from_request` validates every offer (at most 16 over all
-fields) and `extensions()` iterates them. In this version no extension is
-negotiated: every offer is declined (RFC 6455 allows it), and a client
-refuses a response that accepts one it did not offer. permessage-deflate is
-planned behind the `deflate` feature.
+fields) and `extensions()` iterates them. The one extension ws-net
+negotiates is [permessage-deflate](#permessage-deflate) (feature `deflate`);
+every other offer is declined (RFC 6455 allows it), and a client refuses a
+response that accepts one it did not offer.
 
 ```rust
 use ws_net::extension;
@@ -1364,6 +1373,93 @@ let offers: Vec<_> = extension::parse(b"permessage-deflate; client_max_window_bi
 let params: Vec<_> = offers[0].params().map(|p| (p.name, p.value)).collect();
 assert_eq!(params, [("client_max_window_bits", Some("10")), ("server_no_context_takeover", None)]);
 # Ok::<(), ws_net::HandshakeError>(())
+```
+
+<a id="permessage-deflate"></a>
+## permessage-deflate (feature `deflate`)
+
+RFC 7692 on [compress-lib](https://crates.io/crates/compress-lib) (first
+party, no dependencies). Off unless the feature is on and the policy or
+the client asks for it.
+
+```rust,ignore
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub struct DeflateConfig { /* private */ }
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DeflateParams {
+    pub server_no_context_takeover: bool,
+    pub client_no_context_takeover: bool,
+    pub server_max_window_bits: u8,   // 8..=15
+    pub client_max_window_bits: u8,   // 8..=15
+}
+```
+
+| Item | Default | Description |
+|---|---|---|
+| `DeflateConfig::new()`, `Default` | | The defaults below: memory-lean and keeping secrets in one message from leaking through the next. |
+| `with_server_context_takeover(bool)`, `with_client_context_takeover(bool)` | off, off | Whether each end may keep its compression window between messages: better ratios for similar messages, at the cost of the window per connection and of letting one message probe another (RFC 7692 section 8). |
+| `with_server_max_window_bits(u8)`, `with_client_max_window_bits(u8)` | 15, 15 | The largest windows, clamped to 8 to 15. |
+| `with_level(u8)`, `with_min_size(usize)` | 1, 256 | Compression level 0 to 9; messages shorter than `min_size` go uncompressed. |
+| `AcceptPolicy::with_deflate(DeflateConfig)` | | The server accepts the first offer, in the client's order, that the configuration can satisfy; offers with unknown, repeated, or invalid parameters are declined. A configuration asking for a client window under 15 bits declines a client that did not offer `client_max_window_bits` (the response may not limit it). |
+| `ClientHandshake::with_deflate(DeflateConfig)` | | The client offers one element: `server_no_context_takeover` unless server takeover is allowed, `client_no_context_takeover` unless its own is, `server_max_window_bits` below 15, and `client_max_window_bits`. A response that breaks RFC 7692 section 7 is `HandshakeError::InvalidExtensions`. Read it with `verify_full`, `HeadReader::client`, or the `blocking` module, which return the agreement for `connection`. |
+| `Negotiated::deflate(&self) -> Option<&DeflateParams>` | | The agreement. |
+| `PreparedMessage::with_deflate(self, &DeflateConfig)` | | A broadcast compressed once (see [`PreparedMessage`](#preparedmessage)). |
+
+On a connection that agreed:
+
+- Sends compress by [`SendOptions`](#preparedmessage); a compressed
+  message has RSV1 on its first frame and is split at `send_frame` like any
+  other. Fragmented sends and control frames go uncompressed.
+- Received messages with RSV1 are inflated into the reassembly buffer as
+  their bytes arrive. The inflated size is capped at `max_message` while it
+  is produced, so a small compressed bomb fails with `MessageTooLarge`
+  (1009) at the budget, never past it; the compressed size of a message is
+  capped too, at `max_message` plus a sixty-fourth plus 1 KiB. Inflated
+  text is validated once, whole, when the message is complete (in pieces,
+  which failure is reported would depend on how the bytes arrive; the
+  budget bounds the work before the check). Undecodable data is
+  `InvalidCompressedData` (1007); RSV1 on a continuation or a control frame
+  is `ReservedBits` (1002).
+- The compressor and decompressor are built on first use.
+  `release_memory` drops each one that holds no context between messages;
+  `memory_in_use` counts them; `wipe` zeroes their windows and drops them.
+
+Memory per connection (compress-lib's figures): a decompressor without
+takeover holds its decode tables, about 12 KiB, and adds the window
+(`2^bits` bytes) with takeover; a level-1 compressor holds about 330 KiB at
+15 bits and about 30 KiB at 9 bits. A server sending large volumes to many
+clients picks its server window bits with that in mind.
+
+```rust
+# #[cfg(feature = "deflate")] {
+use ws_net::{AcceptPolicy, ClientHandshake, DeflateConfig, HeadReader, OriginPolicy, ServerHandshake};
+
+let client = ClientHandshake::with_nonce(*b"the sample nonce").with_deflate(DeflateConfig::new());
+let mut request = Vec::new();
+client.write_request("chat.example", "/", &mut request)?;
+
+let (handshake, _) = ServerHandshake::from_head(&request)?.expect("complete");
+let policy = AcceptPolicy::new()
+    .with_origins(OriginPolicy::any_origin())
+    .with_deflate(DeflateConfig::new());
+let mut response = Vec::new();
+let mut server = handshake.accept(&policy, &mut response)?;
+
+let (verified, _) = HeadReader::new().client(&client, &response)?.expect("complete");
+let mut conn = client.connection_with_seed(&verified, [7; 32]);
+assert!(conn.negotiated().deflate().is_some());
+
+let update = r#"{"jsonrpc":"2.0","method":"tick","params":[1,2,3]}"#.repeat(10);
+server.send_text(&update)?;
+assert_eq!(server.output()[0], 0xC1); // FIN, RSV1, text
+let wire = server.output().to_vec();
+let _ = conn.feed(&wire);
+assert!(matches!(conn.poll()?, ws_net::Event::Text(t) if t == update));
+# }
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ## The `blocking` module
@@ -1534,10 +1630,11 @@ assert_eq!(&data, b"Hello");
 | Feature | Default | Description |
 |---|---|---|
 | `std` | yes | Masking-key seeds and handshake nonces from the OS cryptographic random source through `mod-rand` (first party, no dependencies): `Connection::client`, `try_client`, `ClientHandshake::new`, `try_new`, `ClientHandshake: Default`, and the [`blocking`](#the-blocking-module) module. Without it the crate is `no_std` + `alloc` and clients take a seed (`client_with_seed`, `with_nonce`), which must come from a cryptographic source. |
+| `deflate` | no | [permessage-deflate](#permessage-deflate) (RFC 7692) on `compress-lib` (first party, no dependencies, `no_std` + `alloc`). Works with or without `std`. |
 
 Dependencies: `parse-net` (always; the shared RFC 9110 grammar, no
-allocator, no dependencies of its own) and `mod-rand` (feature `std`). No
-third-party runtime dependency.
+allocator, no dependencies of its own), `mod-rand` (feature `std`), and
+`compress-lib` (feature `deflate`). No third-party runtime dependency.
 
 ## Limits reference
 
@@ -1587,7 +1684,7 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | `Limits::with_max_output` (32 MiB default), `with_input_buffer` (256 B to 1 MiB, default 64 KiB), `with_retain` (64 KiB), their accessors, `DEFAULT_*` constants | 0.4 |
 | `WsError` 0.2 variants and `close_code`; `RandomUnavailable` | 0.2, 0.3 |
 | `WsError::OutputFull`, `IdleTimeout` (1001), `CloseTimeout` (1006), `MessageTimeout` (1008) | 0.4 |
-| `WsError::InvalidCompressedData` (1007, feature `deflate`) | 1.1 (moved: no first-party DEFLATE crate) |
+| `WsError::InvalidCompressedData` (1007; produced with feature `deflate`) | 0.9 |
 | `WsError::AllocationFailed` (1011) | 0.6 |
 | `CloseCode`, `CloseFrame` | 0.2 |
 | `CloseCode::is_private_use`, `is_registered`, `is_reporting_only` | 0.4 |
@@ -1596,12 +1693,12 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | `ServerHandshake::extensions`, `write_response_with` (negotiated extensions, extra headers), `response_fields` (the 101 field list for an HTTP layer), `MAX_EXTENSION_OFFERS` | 0.4 |
 | `accept`, `Acceptor`, `Accepted`, `AcceptPolicy` (`new`, `with_origins`, `with_protocols`, `require_protocol`, `with_limits`, `check`), `Decision`, `OriginPolicy`, `HeadReader`, `Verified` | 0.3 |
 | `AcceptPolicy::with_hosts`, `with_keepalive`, `with_secure`; `HandshakeError::HostRefused`; `write_refusal(status, retry_after, out)` (403, 429, 503) | 0.4 |
-| `AcceptPolicy::with_deflate` | 1.1 (moved) |
+| `AcceptPolicy::with_deflate` (feature `deflate`) | 0.9 |
 | `ClientHandshake`: `new`, `with_nonce`, `with_protocols`, `with_origin`, `key`, `write_request`, `verify`, `verify_head` | 0.2 |
 | `ClientHandshake::try_new` | 0.3 |
 | `ClientHandshake::with_header`, `verify_full` | 0.4 |
 | `ClientHandshake::connection`, `connection_with_seed`; `Verified::none`; `Connection::with_extensions`, `negotiated` | 0.5 |
-| `ClientHandshake::with_deflate` | 1.1 (moved) |
+| `ClientHandshake::with_deflate` (feature `deflate`) | 0.9 |
 | `HandshakeError` 0.2 variants, `status`, `write_response`; `UnexpectedBody`, `OriginRefused`, `ProtocolRequired`, `RandomUnavailable` | 0.2, 0.3 |
 | `HandshakeError::InvalidExtensions` | 0.4 |
 | `accept_key`, `AcceptKey` | 0.2 |
@@ -1612,6 +1709,6 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | `extension` module: `parse`, `Offers`, `Offer` (`name`, `params`), `Param`, `Negotiated` (`none`, `is_empty`), `MAX_OFFERS`, `MAX_PARAMS` | 0.4 |
 | `blocking` module (feature `std`): `accept`, `accept_with`, `connect`, `connect_with`, `WebSocket` (`from_upgraded`, `read`, `send_text`, `send_binary`, `send`, `ping`, `close`, `flush`, `connection`, `connection_mut`, `get_ref`, `get_mut`, `into_inner`), `Error` | 0.4 |
 | `SendOptions`, `send_text_with`, `send_binary_with` | 0.5 |
-| permessage-deflate (feature `deflate`): `DeflateConfig`, `DeflateParams`, `PreparedMessage::with_deflate`, `Negotiated::deflate` | 1.1 (moved: no first-party DEFLATE crate exists; `dev/PLAN.md` D-032) |
+| permessage-deflate (feature `deflate`): `DeflateConfig`, `DeflateParams`, `PreparedMessage::with_deflate`, `compressed_len`, `Negotiated::deflate` | 0.9 (back from 1.1 once compress-lib was published; `dev/PLAN.md` D-056) |
 | `VERSION` | 0.3 |
 | After 1.0: shared-segment output, a public extension trait, RFC 8441 (`ExtendedConnect`), connection state export | 1.x |

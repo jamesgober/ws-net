@@ -11,7 +11,7 @@
 use std::io;
 
 use http_net::{Response, blocking::Server};
-use ws_net::{AcceptPolicy, Connection, ServerHandshake, blocking, extension::Negotiated};
+use ws_net::{AcceptPolicy, Connection, ServerHandshake, blocking};
 
 fn main() -> io::Result<()> {
     let addr = std::env::args()
@@ -46,7 +46,7 @@ fn main() -> io::Result<()> {
             Err(e) => return Response::new(e.status()),
         };
         let mut response = Response::switching_protocols("websocket");
-        let fields = handshake.response_fields(decision.protocol, &Negotiated::none());
+        let fields = handshake.response_fields(decision.protocol, &decision.extensions);
         for (name, value) in fields.into_iter().flatten() {
             // switching_protocols writes upgrade and connection itself.
             if name.starts_with("sec-websocket-") {

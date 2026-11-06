@@ -34,7 +34,8 @@ use crate::close::CloseCode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WsError {
     /// RSV1, RSV2, or RSV3 is set, and no extension that defines them was
-    /// negotiated. Close code 1002.
+    /// negotiated; or, with permessage-deflate, RSV1 is set on a control
+    /// frame or a continuation. Close code 1002.
     ReservedBits,
     /// Opcode 0x3 to 0x7 or 0xB to 0xF. Close code 1002.
     ReservedOpcode,
@@ -116,6 +117,11 @@ pub enum WsError {
     /// aborting; flush it, then close the transport, and lower the budgets
     /// or the number of connections.
     AllocationFailed,
+    /// A compressed message (permessage-deflate, feature `deflate`) is not
+    /// valid DEFLATE: a bad block, a back-reference beyond the window or
+    /// into a message the window does not hold, or data after the final
+    /// block. A Close with 1007 (Invalid Payload) was queued.
+    InvalidCompressedData,
 }
 
 impl WsError {
@@ -149,7 +155,7 @@ impl WsError {
             | Self::ExpectedContinuation
             | Self::InvalidClosePayload
             | Self::InvalidCloseCode => Some(CloseCode::PROTOCOL_ERROR),
-            Self::InvalidUtf8 => Some(CloseCode::INVALID_PAYLOAD),
+            Self::InvalidUtf8 | Self::InvalidCompressedData => Some(CloseCode::INVALID_PAYLOAD),
             Self::FrameTooLarge | Self::MessageTooLarge => Some(CloseCode::MESSAGE_TOO_BIG),
             Self::UnexpectedEof => Some(CloseCode::ABNORMAL),
             Self::IdleTimeout => Some(CloseCode::GOING_AWAY),
@@ -190,6 +196,7 @@ impl fmt::Display for WsError {
             Self::CloseTimeout => "the peer did not answer the Close within the close timeout",
             Self::MessageTimeout => "a message stayed incomplete past the message timeout",
             Self::AllocationFailed => "memory for an incoming message could not be allocated",
+            Self::InvalidCompressedData => "compressed message is not valid DEFLATE",
         };
         f.write_str(msg)
     }

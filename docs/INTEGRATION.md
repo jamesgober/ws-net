@@ -16,6 +16,7 @@ loop with a different owner of the bytes.
 - [A connection engine (serve-net and others)](#a-connection-engine-serve-net-and-others)
 - [net-io](#net-io)
 - [A gateway: policy, counters, wipe, revocation](#a-gateway-policy-counters-wipe-revocation)
+- [Compression (permessage-deflate)](#compression-permessage-deflate)
 - [TLS (tls-net)](#tls-tls-net)
 - [Memory per connection](#memory-per-connection)
 
@@ -59,7 +60,9 @@ for (name, value) in handshake.response_fields(decision.protocol, &decision.exte
 }
 http.respond(&response, &mut out)?;
 // ... poll http until ServerEvent::Upgraded, then:
-let mut conn = Connection::server().with_limits(*policy.limits());
+let mut conn = Connection::server()
+    .with_limits(*policy.limits())
+    .with_extensions(decision.extensions); // what the 101 agreed
 let mut rest = http.remaining_input();
 while !rest.is_empty() {
     let n = conn.feed(rest);
@@ -181,6 +184,45 @@ rules:
   `send_prepared` appends it to each connection with one copy, under each
   connection's own output budget.
 
+## Compression (permessage-deflate)
+
+With the `deflate` feature, `AcceptPolicy::with_deflate` and
+`ClientHandshake::with_deflate` negotiate RFC 7692. The agreement travels
+with the handshake: `Decision::extensions` on the server, the verified
+response on the client. It must reach the connection, or a compressed
+message from the peer fails the connection with 1002.
+
+- **Server, sans-IO.** `with_extensions(decision.extensions)` on the
+  connection, as in the http-net example above (without the feature it is
+  empty, so the line is right either way). `ServerHandshake::accept`,
+  `Acceptor`, and `blocking::accept` do it for you.
+- **Server, blocking http-net.** The decision is made in the request
+  handler and the socket arrives in `on_upgrade`: carry `decision.extensions`
+  (a `Copy` value) from one to the other and build the connection with it.
+- **Client.** `verify_full`, `HeadReader::client`, and
+  `blocking::connect_with` return the agreement; `connection` uses it.
+
+What it costs and what to set:
+
+- Memory: the compressor is the large part (about 330 KiB at 15 bits,
+  about 30 KiB at 9 bits, level 1), the decompressor about 12 KiB plus its
+  window with client takeover. Both are built on first use, so a
+  connection that never sends or receives a compressed message pays
+  nothing; `release_memory` drops each one that keeps no context between
+  messages. A server with many connections sending large volumes lowers
+  `with_server_max_window_bits` or leaves server takeover off.
+- CPU: level 1 is the default. Messages under `with_min_size` (256 bytes)
+  and messages that would not shrink go uncompressed.
+- Budgets hold as before: `max_message` bounds the inflated size (1009 at
+  the budget, never past it), and `max_output` bounds what a send queues.
+- Secrets: compression lets data the peer controls probe data it does not
+  when both are in one compressed stream (RFC 7692 section 8). With
+  takeover off (the default) each message is compressed alone; send a
+  message that mixes a secret with attacker-chosen text with
+  `send_text_with(.., SendOptions::uncompressed())`.
+- Broadcast: `PreparedMessage::with_deflate` compresses once for every
+  connection with a matching agreement; others get the uncompressed frames.
+
 ## TLS (tls-net)
 
 ws-net never sees TLS: `wss://` is a tls-net session whose plaintext side is
@@ -200,6 +242,7 @@ ways, and this close order, checked step by step. CI runs it on Linux.
 | input | `Limits::input_buffer` (64 KiB default; 256 B to 1 MiB) | `release_memory` (kept between reads otherwise) |
 | reassembly | the message received so far, never above `max_message`, plus up to 1 MiB reserved ahead of arrived bytes | after delivery when larger than `retain`; `release_memory` |
 | output | `max_output` + 262 bytes for automatic Pong and Close; capacity up to twice that (vector growth) plus 64 KiB of written prefix before compaction | when drained and larger than `retain`; `release_memory` |
+| compression (feature `deflate`) | compressor about 330 KiB at 15 bits (about 30 KiB at 9), decompressor about 12 KiB plus the window with client takeover | `release_memory` for each one without takeover; `wipe` |
 | inline | `size_of::<Connection>()`, at most 512 bytes (tested) | never |
 
 `tests/memory.rs` measures each scenario with a counting allocator: a 4 MiB

@@ -1,11 +1,12 @@
 //! The connection: frame parsing, reassembly, control frames, the closing
 //! handshake, and the output queue.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 use core::{fmt, hint::black_box};
 
 use crate::{
     close::{CloseCode, CloseFrame},
+    deflate::Codec,
     error::WsError,
     extension::Negotiated,
     frame::{FrameHeader, Opcode, apply_mask},
@@ -18,12 +19,17 @@ use crate::{
 
 /// Smallest input allocation.
 const INPUT_MIN: usize = 4096;
+/// The most unread input that can still be waiting for more: a control
+/// frame (131 bytes with its mask) or a data frame's header (14 bytes).
+const WAITING_MAX: usize = 131;
 /// Output already written beyond this is compacted away eagerly.
 const OUT_COMPACT: usize = 64 * 1024;
 /// The most reassembly space reserved ahead of the bytes that have arrived.
 /// A header announces a length but proves nothing; with the budgets lifted,
 /// reserving what it announces would let 14 bytes request terabytes.
 const RESERVE_CAP: u64 = 1024 * 1024;
+/// The first header byte's RSV1 bit: permessage-deflate's "compressed".
+const RSV1: u8 = 0x40;
 /// Output allowed above `max_output` for an automatic Pong and a Close, at
 /// most 131 bytes each (2 header bytes, a 4-byte mask for a client, 125
 /// bytes of payload), so a flooded queue can still answer and close.
@@ -176,6 +182,8 @@ enum Lent {
     Reassembled(MessageKind),
     /// In the input buffer, at this range (single-frame fast path).
     Input(MessageKind, usize, usize),
+    /// Inflated into the reassembly buffer (text included, validated).
+    Inflated(MessageKind),
 }
 
 /// Input side: buffer, frame in progress, message reassembly.
@@ -211,7 +219,12 @@ impl Reader {
     fn spare(&mut self, cap: usize) -> &mut [u8] {
         if self.filled == self.input.len() {
             let len = self.input.len();
-            if self.pos > 0 && (self.pos >= len / 2 || len >= cap) {
+            // Compacting copies the unread bytes, so it waits until half
+            // the buffer is read, or until a full buffer holds too little
+            // to parse: then input is needed and must fit. A full buffer
+            // with more unread is parsed first, never copied per event.
+            let unread = self.filled - self.pos;
+            if self.pos > 0 && (self.pos >= len / 2 || (len >= cap && unread <= WAITING_MAX)) {
                 self.input.copy_within(self.pos..self.filled, 0);
                 self.filled -= self.pos;
                 self.pos = 0;
@@ -308,7 +321,7 @@ impl Reader {
 
 /// Zeroes all of `v`'s allocation, spare capacity included (bytes a
 /// compaction or a `clear` left behind), then empties it.
-fn wipe_vec(v: &mut Vec<u8>) {
+pub(crate) fn wipe_vec(v: &mut Vec<u8>) {
     v.iter_mut().for_each(|b| *b = 0);
     let spare = v.capacity() - v.len();
     // budget: capacity: zeroes the spare capacity, never grows
@@ -410,25 +423,46 @@ impl Writer {
         }
     }
 
-    fn send_message(&mut self, limits: &Limits, kind: Kind, data: &[u8]) -> Result<(), WsError> {
+    fn send_message(
+        &mut self,
+        limits: &Limits,
+        kind: Kind,
+        data: &[u8],
+        codec: Option<&mut Codec>,
+        options: SendOptions,
+    ) -> Result<(), WsError> {
         self.check_can_send()?;
         if self.sending.is_some() {
             return Err(WsError::InvalidState("a fragmented message is being sent"));
         }
-        self.write_fragments(limits, kind.opcode(), data, true)?;
+        if let Some(c) = codec {
+            if let Some(payload) = c.compress(data, options) {
+                let sent = self.write_fragments(limits, kind.opcode(), payload, true, RSV1);
+                if sent.is_err() {
+                    c.unsent();
+                }
+                c.trim(limits.retain());
+                sent?;
+                self.messages_out = self.messages_out.saturating_add(1);
+                return Ok(());
+            }
+        }
+        self.write_fragments(limits, kind.opcode(), data, true, 0)?;
         self.messages_out = self.messages_out.saturating_add(1);
         Ok(())
     }
 
     /// Writes `data` as one or more frames of at most `send_frame` bytes;
-    /// the first uses `first`, the rest are continuations; `fin` marks the
-    /// last. Refused whole, with nothing written, if it does not fit.
+    /// the first uses `first` and the reserved bits `rsv`, the rest are
+    /// continuations; `fin` marks the last. Refused whole, with nothing
+    /// written, if it does not fit.
     fn write_fragments(
         &mut self,
         limits: &Limits,
         first: Opcode,
         data: &[u8],
         fin: bool,
+        rsv: u8,
     ) -> Result<(), WsError> {
         let max = usize::try_from(limits.send_frame())
             .unwrap_or(usize::MAX)
@@ -444,14 +478,19 @@ impl Writer {
                 self.check_data_room(self.frame_size(data.len()))?;
             }
             self.pong_at = None;
-            return self.raw_frame(first, fin, data);
+            return self.raw_frame(first, fin, rsv, data);
         }
         self.check_data_room(self.message_size(data.len(), max))?;
         let count = data.len().div_ceil(max);
         let before = self.out.len();
+        self.pong_at = None;
         for (i, piece) in data.chunks(max).enumerate() {
-            let opcode = if i == 0 { first } else { Opcode::Continuation };
-            if let Err(e) = self.frame(opcode, fin && i + 1 == count, piece) {
+            let (opcode, bits) = if i == 0 {
+                (first, rsv)
+            } else {
+                (Opcode::Continuation, 0)
+            };
+            if let Err(e) = self.raw_frame(opcode, fin && i + 1 == count, bits, piece) {
                 // Only a failed key refill gets here: take back the frames
                 // already written, so the refused send changes nothing.
                 self.out.truncate(before);
@@ -478,7 +517,8 @@ impl Writer {
                 ));
             }
         };
-        self.write_fragments(limits, opcode, data, fin)?;
+        // Fragments go uncompressed: each is framed as the caller gives it.
+        self.write_fragments(limits, opcode, data, fin, 0)?;
         self.sending = if fin { None } else { Some(kind) };
         if fin {
             self.messages_out = self.messages_out.saturating_add(1);
@@ -516,7 +556,11 @@ impl Writer {
         self.queue_close(code, reason)
     }
 
-    fn send_prepared(&mut self, message: &PreparedMessage) -> Result<(), WsError> {
+    fn send_prepared(
+        &mut self,
+        message: &PreparedMessage,
+        codec: Option<&Codec>,
+    ) -> Result<(), WsError> {
         if self.role == Role::Client {
             return Err(WsError::InvalidState(
                 "a client masks every frame; prepared messages are for servers",
@@ -526,10 +570,11 @@ impl Writer {
         if self.sending.is_some() {
             return Err(WsError::InvalidState("a fragmented message is being sent"));
         }
-        self.check_data_room(message.len())?;
+        let frames = message.frames_for(codec.and_then(Codec::prepared_bits));
+        self.check_data_room(frames.len())?;
         self.pong_at = None;
         // budget: max_output: `check_data_room` above
-        self.out.extend_from_slice(message.as_bytes());
+        self.out.extend_from_slice(frames);
         self.messages_out = self.messages_out.saturating_add(1);
         Ok(())
     }
@@ -548,13 +593,20 @@ impl Writer {
     fn frame(&mut self, opcode: Opcode, fin: bool, payload: &[u8]) -> Result<(), WsError> {
         // Anything queued behind the Pong pins it in place.
         self.pong_at = None;
-        self.raw_frame(opcode, fin, payload)
+        self.raw_frame(opcode, fin, 0, payload)
     }
 
-    /// Appends one frame. Every caller passes a valid opcode, and a
-    /// control payload already checked to be at most 125 bytes, so the
-    /// header is written directly: this is the send hot path.
-    fn raw_frame(&mut self, opcode: Opcode, fin: bool, payload: &[u8]) -> Result<(), WsError> {
+    /// Appends one frame. Every caller passes a valid opcode, `rsv` of 0 or
+    /// [`RSV1`] on a data frame, and a control payload already checked to
+    /// be at most 125 bytes, so the header is written directly: this is
+    /// the send hot path.
+    fn raw_frame(
+        &mut self,
+        opcode: Opcode,
+        fin: bool,
+        rsv: u8,
+        payload: &[u8],
+    ) -> Result<(), WsError> {
         // A client without a key source never sends: an unmasked client
         // frame is a protocol error, and a predictable key defeats masking.
         let key = match (&mut self.masks, self.role) {
@@ -564,7 +616,7 @@ impl Writer {
         };
         let len = payload.len();
         let mut header = [0u8; crate::frame::MAX_HEADER_LEN];
-        header[0] = (u8::from(fin) << 7) | opcode.as_u8();
+        header[0] = (u8::from(fin) << 7) | rsv | opcode.as_u8();
         let mask_bit = if key.is_some() { 0x80 } else { 0 };
         let mut n = 2;
         if len < 126 {
@@ -616,7 +668,7 @@ impl Writer {
         let start = self.out.len();
         // A Pong of at most 125 bytes always encodes; the result can only
         // be `Ok`, or `RandomUnavailable` for a client that cannot send.
-        if self.raw_frame(Opcode::Pong, true, payload).is_ok() {
+        if self.raw_frame(Opcode::Pong, true, 0, payload).is_ok() {
             self.pong_at = Some(start);
         }
     }
@@ -712,8 +764,13 @@ pub struct Connection {
     reader: Reader,
     writer: Writer,
     clock: Clock,
-    negotiated: Negotiated,
+    /// permessage-deflate's state, when it was negotiated: one pointer
+    /// inline, so a connection without it pays eight bytes.
+    codec: Option<Box<Codec>>,
 }
+
+/// What a connection without extensions reports.
+static NOTHING: Negotiated = Negotiated::none();
 
 impl fmt::Debug for Connection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -771,7 +828,7 @@ impl Connection {
                 messages_out: 0,
             },
             clock: Clock::default(),
-            negotiated: Negotiated::none(),
+            codec: None,
         }
     }
 
@@ -880,8 +937,9 @@ impl Connection {
     /// Applies what the opening handshake negotiated. A connection built
     /// by [`accept`](crate::accept), [`ServerHandshake::accept`](crate::ServerHandshake::accept),
     /// or [`ClientHandshake::connection`](crate::ClientHandshake::connection)
-    /// already has it. No extension is negotiated in this version, so the
-    /// value is always [`Negotiated::none`].
+    /// already has it. With permessage-deflate (feature `deflate`) the
+    /// connection then sends messages compressed and inflates the peer's;
+    /// its compressor and decompressor are built on first use.
     ///
     /// # Examples
     ///
@@ -893,7 +951,7 @@ impl Connection {
     /// ```
     #[must_use]
     pub fn with_extensions(mut self, negotiated: Negotiated) -> Self {
-        self.negotiated = negotiated;
+        self.codec = Codec::new(negotiated, self.writer.role);
         self
     }
 
@@ -904,7 +962,7 @@ impl Connection {
     /// See [`with_extensions`](Self::with_extensions).
     #[must_use]
     pub fn negotiated(&self) -> &Negotiated {
-        &self.negotiated
+        self.codec.as_deref().map_or(&NOTHING, Codec::negotiated)
     }
 
     /// The limits.
@@ -983,9 +1041,9 @@ impl Connection {
         !self.writer.sent_close && !self.writer.failed && self.writer.sending.is_none()
     }
 
-    /// Copies as much of `bytes` into the input buffer as fits (64 KiB at
-    /// most at a time) and returns how many were taken. Poll, then feed the
-    /// rest.
+    /// Copies as much of `bytes` into the input buffer as fits (at most
+    /// [`Limits::input_buffer`] bytes are buffered) and returns how many
+    /// were taken. Poll, then feed the rest.
     ///
     /// # Examples
     ///
@@ -1014,6 +1072,8 @@ impl Connection {
         if taken > 0 {
             self.reader.arrived = true;
             self.reader.bytes_in = self.reader.bytes_in.saturating_add(taken as u64);
+            // `detach_message` gives nothing once input was fed.
+            self.reader.lent = None;
         }
         taken
     }
@@ -1048,6 +1108,7 @@ impl Connection {
         if added > 0 {
             self.reader.arrived = true;
             self.reader.bytes_in = self.reader.bytes_in.saturating_add(added as u64);
+            self.reader.lent = None;
         }
     }
 
@@ -1088,7 +1149,12 @@ impl Connection {
     /// assert_eq!(conn.output(), [0x88, 0x02, 0x03, 0xEF]);
     /// ```
     pub fn poll(&mut self) -> Result<Event<'_>, WsError> {
-        poll_inner(&mut self.reader, &mut self.writer, &self.limits)
+        poll_inner(
+            &mut self.reader,
+            &mut self.writer,
+            &self.limits,
+            self.codec.as_deref_mut(),
+        )
     }
 
     /// As [`poll`](Self::poll), also returning a [`Sender`] that borrows
@@ -1118,10 +1184,18 @@ impl Connection {
             reader,
             writer,
             limits,
+            codec,
             ..
         } = self;
-        let event = poll_inner(reader, writer, limits)?;
-        Ok((event, Sender { writer, limits }))
+        let event = poll_inner(reader, writer, limits, codec.as_deref_mut())?;
+        Ok((
+            event,
+            Sender {
+                writer,
+                limits,
+                codec: codec.as_deref_mut(),
+            },
+        ))
     }
 }
 
@@ -1180,6 +1254,7 @@ fn poll_inner<'r>(
     reader: &'r mut Reader,
     writer: &mut Writer,
     limits: &Limits,
+    mut codec: Option<&mut Codec>,
 ) -> Result<Event<'r>, WsError> {
     reader.lent = None;
     if reader.delivered {
@@ -1218,35 +1293,45 @@ fn poll_inner<'r>(
                 let start = reader.pos;
                 f.remaining -= n as u64;
                 let complete = f.remaining == 0 && f.fin;
+                let inflating = codec.as_deref().is_some_and(Codec::inflating);
                 if let Some(chunk) = reader.input.get_mut(start..start + n) {
                     if let Some(key) = f.mask {
                         apply_mask(chunk, key, f.phase);
                     }
-                    match f.kind {
-                        Kind::Binary => {
-                            if let Err(e) = grow(&mut reader.msg, chunk.len(), limits.max_message())
-                            {
-                                return Err(writer.fail(e));
-                            }
-                            // budget: max_message: `grow` made the room first
-                            reader.msg.extend_from_slice(chunk);
+                    if let (true, Some(c)) = (inflating, codec.as_deref_mut()) {
+                        let chunk = reader.input.get(start..start + n).unwrap_or(&[]);
+                        let max = limits.max_message();
+                        if let Err(e) = c.inflate(chunk, complete, &mut reader.msg, max) {
+                            return Err(writer.fail(e));
                         }
-                        Kind::Text => {
-                            let need = chunk.len() + usize::from(reader.carry_len);
-                            let grown = grow_text(&mut reader.text, need, limits.max_message());
-                            if let Err(e) = grown {
-                                return Err(writer.fail(e));
+                    } else {
+                        match f.kind {
+                            Kind::Binary => {
+                                if let Err(e) =
+                                    grow(&mut reader.msg, chunk.len(), limits.max_message())
+                                {
+                                    return Err(writer.fail(e));
+                                }
+                                // budget: max_message: `grow` made the room first
+                                reader.msg.extend_from_slice(chunk);
                             }
-                            let chunk = reader.input.get(start..start + n).unwrap_or(&[]);
-                            let pushed = Reader::push_text(
-                                &mut reader.text,
-                                &mut reader.carry,
-                                &mut reader.carry_len,
-                                chunk,
-                                complete,
-                            );
-                            if let Err(e) = pushed {
-                                return Err(writer.fail(e));
+                            Kind::Text => {
+                                let need = chunk.len() + usize::from(reader.carry_len);
+                                let grown = grow_text(&mut reader.text, need, limits.max_message());
+                                if let Err(e) = grown {
+                                    return Err(writer.fail(e));
+                                }
+                                let chunk = reader.input.get(start..start + n).unwrap_or(&[]);
+                                let pushed = Reader::push_text(
+                                    &mut reader.text,
+                                    &mut reader.carry,
+                                    &mut reader.carry_len,
+                                    chunk,
+                                    complete,
+                                );
+                                if let Err(e) = pushed {
+                                    return Err(writer.fail(e));
+                                }
                             }
                         }
                     }
@@ -1262,6 +1347,10 @@ fn poll_inner<'r>(
                 }
                 reader.message = None;
                 reader.delivered = true;
+                if let (true, Some(c)) = (inflating, codec.as_deref_mut()) {
+                    c.end_message();
+                    return inflated(reader, f.kind, writer);
+                }
                 reader.messages_in = reader.messages_in.saturating_add(1);
                 reader.lent = Some(Lent::Reassembled(f.kind.into()));
                 return Ok(match f.kind {
@@ -1277,7 +1366,11 @@ fn poll_inner<'r>(
                 Ok(None) => return Ok(Event::NeedInput),
                 Err(e) => return Err(writer.fail(e)),
             };
-            if header.rsv != 0 {
+            // RSV1 is permessage-deflate's "compressed" bit, allowed only on
+            // the first frame of a data message (RFC 7692 section 6.1).
+            let compressed = header.rsv == 0b100;
+            let first_data = matches!(header.opcode, Opcode::Text | Opcode::Binary);
+            if header.rsv != 0 && !(compressed && first_data && codec.is_some()) {
                 return Err(writer.fail(WsError::ReservedBits));
             }
             match (writer.role, header.mask) {
@@ -1349,9 +1442,45 @@ fn poll_inner<'r>(
                 (Opcode::Text, None) => Kind::Text,
                 (_, None) => Kind::Binary,
             };
-            let total = (reader.message_len() as u64).saturating_add(header.payload_len);
-            if total > limits.max_message() {
-                return Err(writer.fail(WsError::MessageTooLarge));
+            if first_data {
+                if let Some(c) = codec.as_deref_mut() {
+                    c.begin(compressed);
+                }
+            }
+            if let Some(c) = codec.as_deref_mut().filter(|c| c.inflating()) {
+                // The inflated size is checked while inflating; the
+                // compressed size has its own bound.
+                if let Err(e) = c.admit(header.payload_len, limits.max_message()) {
+                    return Err(writer.fail(e));
+                }
+            } else {
+                let total = (reader.message_len() as u64).saturating_add(header.payload_len);
+                if total > limits.max_message() {
+                    return Err(writer.fail(WsError::MessageTooLarge));
+                }
+            }
+            let inflating = codec.as_deref().is_some_and(Codec::inflating);
+
+            if inflating && header.fin && first_data && available as u64 >= header.payload_len {
+                // A whole compressed message is buffered: inflate it straight
+                // from the input into the reassembly buffer.
+                let start = reader.pos + header_len;
+                let end = start + header.payload_len as usize;
+                reader.pos = end;
+                let payload = reader.input.get_mut(start..end).unwrap_or(&mut []);
+                if let Some(key) = header.mask {
+                    apply_mask(payload, key, 0);
+                }
+                if let Some(c) = codec.as_deref_mut() {
+                    let payload = reader.input.get(start..end).unwrap_or(&[]);
+                    let max = limits.max_message();
+                    if let Err(e) = c.inflate(payload, true, &mut reader.msg, max) {
+                        return Err(writer.fail(e));
+                    }
+                    c.end_message();
+                }
+                reader.delivered = true;
+                return inflated(reader, kind, writer);
             }
 
             if header.opcode != Opcode::Continuation
@@ -1385,7 +1514,7 @@ fn poll_inner<'r>(
             }
 
             reader.pos += header_len;
-            if reader.message.is_none() && kind == Kind::Text {
+            if reader.message.is_none() && kind == Kind::Text && !inflating {
                 // Reuse the binary buffer's allocation; it is empty here, so
                 // the conversion checks nothing.
                 let bytes = core::mem::take(&mut reader.msg);
@@ -1396,7 +1525,12 @@ fn poll_inner<'r>(
             // Reserving the frame up front saves growing the buffer piece by
             // piece, but only up to RESERVE_CAP: the length is the peer's
             // claim, and the budgets may have been lifted.
-            let ahead = header.payload_len.min(RESERVE_CAP);
+            // An inflated message grows as it is inflated instead.
+            let ahead = if inflating {
+                0
+            } else {
+                header.payload_len.min(RESERVE_CAP)
+            };
             let ahead = usize::try_from(ahead).unwrap_or(0);
             let grown = match kind {
                 Kind::Binary => grow(&mut reader.msg, ahead, limits.max_message()),
@@ -1420,6 +1554,30 @@ fn poll_inner<'r>(
     }
 }
 
+/// The event for an inflated message in the reassembly buffer. Text is
+/// validated here, once, whole (see `Codec::inflate` for why not in
+/// pieces); the message is counted and lent (for `detach_message`) only
+/// once it is valid.
+fn inflated<'r>(
+    reader: &'r mut Reader,
+    kind: Kind,
+    writer: &mut Writer,
+) -> Result<Event<'r>, WsError> {
+    if kind == Kind::Text && core::str::from_utf8(&reader.msg).is_err() {
+        return Err(writer.fail(WsError::InvalidUtf8));
+    }
+    reader.messages_in = reader.messages_in.saturating_add(1);
+    reader.lent = Some(Lent::Inflated(kind.into()));
+    let msg = &reader.msg;
+    Ok(match kind {
+        Kind::Text => match core::str::from_utf8(msg) {
+            Ok(text) => Event::Text(text),
+            Err(_) => return Err(writer.fail(WsError::InvalidUtf8)),
+        },
+        Kind::Binary => Event::Binary(msg),
+    })
+}
+
 impl Connection {
     /// Sends a text message (split into frames of at most
     /// [`Limits::send_frame`] bytes when larger).
@@ -1437,8 +1595,7 @@ impl Connection {
     /// assert_eq!(conn.output(), [0x81, 0x02, b'h', b'i']);
     /// ```
     pub fn send_text(&mut self, text: &str) -> Result<(), WsError> {
-        self.writer
-            .send_message(&self.limits, Kind::Text, text.as_bytes())
+        self.send_text_with(text, SendOptions::new())
     }
 
     /// Sends a binary message (split like [`send_text`](Self::send_text)).
@@ -1455,14 +1612,15 @@ impl Connection {
     /// assert_eq!(conn.output(), [0x82, 0x03, 1, 2, 3]);
     /// ```
     pub fn send_binary(&mut self, data: &[u8]) -> Result<(), WsError> {
-        self.writer.send_message(&self.limits, Kind::Binary, data)
+        self.send_binary_with(data, SendOptions::new())
     }
 
     /// As [`send_text`](Self::send_text), with per-message
-    /// [`SendOptions`]. With no compression negotiated (always, in this
-    /// version), the options change nothing on the wire; code written
-    /// against them keeps its meaning when permessage-deflate lands, so a
-    /// message carrying a secret can say `SendOptions::uncompressed()` now.
+    /// [`SendOptions`]: with permessage-deflate negotiated (feature
+    /// `deflate`), whether this message may be compressed. A message that
+    /// carries a secret next to data an attacker chooses should say
+    /// `SendOptions::uncompressed()`. Without compression the options
+    /// change nothing on the wire.
     ///
     /// # Errors
     ///
@@ -1479,8 +1637,13 @@ impl Connection {
     /// # Ok::<(), ws_net::WsError>(())
     /// ```
     pub fn send_text_with(&mut self, text: &str, options: SendOptions) -> Result<(), WsError> {
-        let _ = options;
-        self.send_text(text)
+        self.writer.send_message(
+            &self.limits,
+            Kind::Text,
+            text.as_bytes(),
+            self.codec.as_deref_mut(),
+            options,
+        )
     }
 
     /// As [`send_binary`](Self::send_binary), with per-message
@@ -1501,13 +1664,19 @@ impl Connection {
     /// # Ok::<(), ws_net::WsError>(())
     /// ```
     pub fn send_binary_with(&mut self, data: &[u8], options: SendOptions) -> Result<(), WsError> {
-        let _ = options;
-        self.send_binary(data)
+        self.writer.send_message(
+            &self.limits,
+            Kind::Binary,
+            data,
+            self.codec.as_deref_mut(),
+            options,
+        )
     }
 
     /// Sends one fragment of a text message; `fin` ends the message. Each
     /// fragment is a `&str`, so the message is valid UTF-8 whole. Control
     /// frames may be sent between fragments; other messages may not.
+    /// Fragmented messages are never compressed.
     ///
     /// # Errors
     ///
@@ -1718,7 +1887,8 @@ impl Connection {
         if !clock.armed {
             return Ok(Tick::Nothing);
         }
-        let now = now.as_u64().max(clock.now);
+        // `UNSET` marks a timer that is off; the latest time is one before.
+        let now = now.as_u64().min(UNSET - 1).max(clock.now);
         clock.now = now;
         if writer.failed || reader.received_close {
             // Closed, but the transport may still wait on a peer that is
@@ -1937,6 +2107,9 @@ impl Connection {
         if let Some(masks) = w.masks.as_mut() {
             masks.release();
         }
+        if let Some(c) = self.codec.as_deref_mut() {
+            c.release();
+        }
     }
 
     /// Heap bytes held by this connection's buffers (capacities, not
@@ -1957,6 +2130,7 @@ impl Connection {
             + self.reader.text.capacity()
             + self.writer.out.capacity()
             + self.writer.masks.as_ref().map_or(0, MaskGen::heap)
+            + self.codec.as_deref().map_or(0, Codec::memory)
     }
 
     /// Overwrites with zeros every buffered byte (input, reassembly,
@@ -1995,6 +2169,9 @@ impl Connection {
         r.lent = None;
         r.frame = None;
         r.message = None;
+        if let Some(c) = self.codec.as_deref_mut() {
+            c.wipe();
+        }
         self.writer.wipe();
     }
 
@@ -2053,7 +2230,7 @@ impl Connection {
                 r.msg = core::mem::replace(into, text);
                 Some(MessageKind::Text)
             }
-            Lent::Reassembled(kind) => {
+            Lent::Reassembled(kind) | Lent::Inflated(kind) => {
                 core::mem::swap(into, &mut r.msg);
                 Some(kind)
             }
@@ -2108,7 +2285,7 @@ impl Connection {
     ///
     /// See [`PreparedMessage`].
     pub fn send_prepared(&mut self, message: &PreparedMessage) -> Result<(), WsError> {
-        self.writer.send_prepared(message)
+        self.writer.send_prepared(message, self.codec.as_deref())
     }
 }
 
@@ -2122,6 +2299,7 @@ impl Connection {
 pub struct Sender<'a> {
     writer: &'a mut Writer,
     limits: &'a Limits,
+    codec: Option<&'a mut Codec>,
 }
 
 impl fmt::Debug for Sender<'_> {
@@ -2143,8 +2321,13 @@ impl Sender<'_> {
     ///
     /// See [`Connection::poll_split`].
     pub fn send_text(&mut self, text: &str) -> Result<(), WsError> {
-        self.writer
-            .send_message(self.limits, Kind::Text, text.as_bytes())
+        self.writer.send_message(
+            self.limits,
+            Kind::Text,
+            text.as_bytes(),
+            self.codec.as_deref_mut(),
+            SendOptions::new(),
+        )
     }
 
     /// As [`Connection::send_binary`].
@@ -2168,7 +2351,13 @@ impl Sender<'_> {
     /// # Ok::<(), ws_net::WsError>(())
     /// ```
     pub fn send_binary(&mut self, data: &[u8]) -> Result<(), WsError> {
-        self.writer.send_message(self.limits, Kind::Binary, data)
+        self.writer.send_message(
+            self.limits,
+            Kind::Binary,
+            data,
+            self.codec.as_deref_mut(),
+            SendOptions::new(),
+        )
     }
 
     /// As [`Connection::send_ping`].
@@ -2230,6 +2419,65 @@ impl Sender<'_> {
         self.writer.close(Some(code), reason)
     }
 
+    /// As [`Connection::send_text_with`]: with per-message
+    /// [`SendOptions`], such as `uncompressed()` for a reply that carries a
+    /// secret.
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::send_text`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{Connection, Event, SendOptions};
+    ///
+    /// let mut conn = Connection::server();
+    /// let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']); // masked "hi"
+    /// let (event, mut sender) = conn.poll_split()?;
+    /// if let Event::Text(text) = event {
+    ///     sender.send_text_with(text, SendOptions::uncompressed())?;
+    /// }
+    /// assert_eq!(conn.output(), [0x81, 0x02, b'h', b'i']);
+    /// # Ok::<(), ws_net::WsError>(())
+    /// ```
+    pub fn send_text_with(&mut self, text: &str, options: SendOptions) -> Result<(), WsError> {
+        self.writer.send_message(
+            self.limits,
+            Kind::Text,
+            text.as_bytes(),
+            self.codec.as_deref_mut(),
+            options,
+        )
+    }
+
+    /// As [`Connection::send_binary_with`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::send_binary`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ws_net::{Connection, SendOptions};
+    ///
+    /// let mut conn = Connection::server();
+    /// let (_, mut sender) = conn.poll_split()?;
+    /// sender.send_binary_with(&[7], SendOptions::new())?;
+    /// assert_eq!(conn.output(), [0x82, 0x01, 7]);
+    /// # Ok::<(), ws_net::WsError>(())
+    /// ```
+    pub fn send_binary_with(&mut self, data: &[u8], options: SendOptions) -> Result<(), WsError> {
+        self.writer.send_message(
+            self.limits,
+            Kind::Binary,
+            data,
+            self.codec.as_deref_mut(),
+            options,
+        )
+    }
+
     /// As [`Connection::send_prepared`].
     ///
     /// # Errors
@@ -2247,7 +2495,7 @@ impl Sender<'_> {
     /// # Ok::<(), ws_net::WsError>(())
     /// ```
     pub fn send_prepared(&mut self, message: &PreparedMessage) -> Result<(), WsError> {
-        self.writer.send_prepared(message)
+        self.writer.send_prepared(message, self.codec.as_deref())
     }
 }
 

@@ -26,9 +26,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use net_io::DriverKind;
+use net_io::{DriverKind, Limits, PrefixPolicy};
 use ws_net::{ClientHandshake, CloseCode, Message, blocking};
-use ws_net_interop_net_io::start;
+use ws_net_interop_net_io::start_with;
 
 /// A tungstenite echo server: one thread per connection.
 fn tungstenite_server() -> SocketAddr {
@@ -105,11 +105,24 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
     let cpus = thread::available_parallelism().map_or(4, |n| n.get()) as u16;
-    let (reactor, reactor_addr) = start(DriverKind::Reactor, cpus).unwrap();
-    let (pool, pool_addr) = start(DriverKind::Blocking, 80).unwrap();
+    // A connection waits at the start barrier while the others connect, and
+    // a busy runner may starve one for seconds: net-io's idle timeout (5 s
+    // on the blocking driver) must not end a benchmark connection.
+    let limits = || {
+        Limits::builder()
+            .max_connections(4096)
+            .max_per_source(4096, PrefixPolicy::DEFAULT)
+            .idle_timeout(Duration::from_secs(600))
+            .build()
+            .unwrap()
+    };
+    let (reactor, reactor_addr) = start_with(DriverKind::Reactor, cpus, limits()).unwrap();
+    let (pool, pool_addr) = start_with(DriverKind::Blocking, 80, limits()).unwrap();
     let tung_addr = tungstenite_server();
 
-    println!("| Connections | Payload | ws-net on reactor | ws-net on blocking pool | tungstenite | reactor / tungstenite |");
+    println!(
+        "| Connections | Payload | ws-net on reactor | ws-net on blocking pool | tungstenite | reactor / tungstenite |"
+    );
     println!("|---:|---:|---:|---:|---:|---:|");
     for conns in [1, 16, 64] {
         for payload in [16, 1024] {

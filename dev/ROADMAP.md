@@ -115,7 +115,7 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 - [x] Small sends behind 0.2.0 (D-033): the fast path skipping the exact size well under the budget and one capacity check per frame landed in 0.8; the remaining cost is the budget and counters, measured and recorded (D-053), to go into `docs/STABILITY-1.0.md`.
 - [x] The Linux 1 MiB receive rows of the hosted harness: a buffer-placement effect of the hosted Linux runner (the same code path 753 µs or 78 µs by heap layout alone, no page faults), not a ws-net cost; recorded (D-052).
 - [x] Extension parameters on parse-net 0.9.1's optional-value parameter parser (D-045), replacing ws-net's own parameter loop; done in 0.8 (D-048).
-- [ ] permessage-deflate on compress-lib, back in 1.0: compress-lib 0.5.0 is on crates.io before 0.9 (D-056). Behind a non-default `deflate` feature on `compress_lib::message`; the decompressed size bounded by `max_message` (1009); the Autobahn 12.x and 13.x cases strict; fuzzed with the other targets.
+- [x] permessage-deflate on compress-lib, back in 1.0: compress-lib 0.5.0 is on crates.io before 0.9 (D-056). Behind a non-default `deflate` feature on `compress_lib::message` (D-057); the decompressed size bounded by `max_message` (1009); the Autobahn 12.x and 13.x cases strict in CI; the `deflate_message` fuzz target. Its 72-hour run is part of the 0.9 fuzzing below.
 - [x] The end-to-end benchmark's payloads above 1 KiB once net-io 0.6.1 reuses output buffers (D-044): 64 KiB rows in 0.8. The 24-hour socket soak is the 0.9 soak above.
 - [ ] Fresh security review of the whole crate.
 - [ ] `docs/STABILITY-1.0.md` draft as the 1.0 readiness note: what is done, what is open, the go/no-go list.

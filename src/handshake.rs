@@ -911,7 +911,7 @@ impl ClientHandshake {
     /// Offers permessage-deflate with `config`'s parameters (feature
     /// `deflate`). Read the response with [`verify_full`](Self::verify_full),
     /// [`HeadReader::client`], or the `blocking` module, which return what
-    /// was agreed for [`connection`](Self::connection): `verify` and
+    /// was agreed for `connection`: `verify` and
     /// `verify_head` check the agreement but return only the subprotocol.
     ///
     /// # Examples
@@ -1139,7 +1139,7 @@ impl ClientHandshake {
     /// Checks the server's response as [`verify`](Self::verify) does, and
     /// returns everything verified: the selected subprotocol and the
     /// negotiated extensions (permessage-deflate when it was offered with
-    /// [`with_deflate`](Self::with_deflate) and accepted).
+    /// `with_deflate` (feature `deflate`) and accepted).
     ///
     /// # Errors
     ///

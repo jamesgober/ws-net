@@ -1289,12 +1289,8 @@ fn poll_inner<'r>(
                     }
                     if let (true, Some(c)) = (inflating, codec.as_deref_mut()) {
                         let chunk = reader.input.get(start..start + n).unwrap_or(&[]);
-                        let mut done =
-                            c.inflate(chunk, complete, &mut reader.msg, limits.max_message());
-                        if done.is_ok() && f.kind == Kind::Text {
-                            done = c.check_text(&reader.msg, complete);
-                        }
-                        if let Err(e) = done {
+                        let max = limits.max_message();
+                        if let Err(e) = c.inflate(chunk, complete, &mut reader.msg, max) {
                             return Err(writer.fail(e));
                         }
                     } else {
@@ -1467,11 +1463,8 @@ fn poll_inner<'r>(
                 }
                 if let Some(c) = codec.as_deref_mut() {
                     let payload = reader.input.get(start..end).unwrap_or(&[]);
-                    let mut done = c.inflate(payload, true, &mut reader.msg, limits.max_message());
-                    if done.is_ok() && kind == Kind::Text {
-                        done = c.check_text(&reader.msg, true);
-                    }
-                    if let Err(e) = done {
+                    let max = limits.max_message();
+                    if let Err(e) = c.inflate(payload, true, &mut reader.msg, max) {
                         return Err(writer.fail(e));
                     }
                     c.end_message();
@@ -1553,8 +1546,8 @@ fn poll_inner<'r>(
     }
 }
 
-/// The event for an inflated message in `msg`; text was validated as it
-/// was inflated, and is checked whole once more to borrow it as `str`.
+/// The event for an inflated message in `msg`; text is validated here,
+/// once, whole (see `Codec::inflate` for why not in pieces).
 fn inflated<'r>(msg: &'r [u8], kind: Kind, writer: &mut Writer) -> Result<Event<'r>, WsError> {
     Ok(match kind {
         Kind::Text => match core::str::from_utf8(msg) {

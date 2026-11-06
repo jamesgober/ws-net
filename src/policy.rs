@@ -289,7 +289,7 @@ pub struct Decision<'a> {
     /// offered.
     pub protocol: Option<&'a str>,
     /// The extensions to accept: permessage-deflate when the policy has
-    /// [`with_deflate`](AcceptPolicy::with_deflate) and the client offered
+    /// `with_deflate` (feature `deflate`) and the client offered
     /// it acceptably, otherwise none (declining every offer, which RFC 6455
     /// allows).
     pub extensions: Negotiated,

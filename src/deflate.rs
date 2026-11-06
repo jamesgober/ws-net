@@ -38,6 +38,7 @@ mod off {
         pub(crate) fn admit(&mut self, _len: u64, _max_message: u64) -> Result<(), WsError> {
             match *self {}
         }
+        #[allow(clippy::ptr_arg)]
         pub(crate) fn inflate(
             &mut self,
             _chunk: &[u8],
@@ -45,9 +46,6 @@ mod off {
             _msg: &mut Vec<u8>,
             _max_message: u64,
         ) -> Result<(), WsError> {
-            match *self {}
-        }
-        pub(crate) fn check_text(&mut self, _msg: &[u8], _complete: bool) -> Result<(), WsError> {
             match *self {}
         }
         pub(crate) fn end_message(&mut self) {
@@ -616,8 +614,6 @@ pub(crate) mod on {
         scratch: Vec<u8>,
         /// The message being received is compressed.
         inflating: bool,
-        /// Inflated text is valid UTF-8 up to here.
-        checked: usize,
         /// Compressed bytes of the message being received.
         wire: u64,
     }
@@ -660,7 +656,6 @@ pub(crate) mod on {
                 rx: None,
                 scratch: Vec::new(),
                 inflating: false,
-                checked: 0,
                 wire: 0,
             }))
         }
@@ -672,7 +667,6 @@ pub(crate) mod on {
         /// A data message starts; `compressed` is its RSV1 bit.
         pub(crate) fn begin(&mut self, compressed: bool) {
             self.inflating = compressed;
-            self.checked = 0;
             self.wire = 0;
         }
 
@@ -699,6 +693,12 @@ pub(crate) mod on {
         /// `msg`, which holds the message so far; `last` ends the message.
         /// The output is capped at `max_message` while it is produced, so a
         /// compressed bomb stops at the budget (1009).
+        ///
+        /// Inflated text is validated whole once the message is complete,
+        /// not piece by piece: compress-lib drops the output of a step that
+        /// fails, so a check in pieces would report a bad byte or a failure
+        /// after it depending on how the input was split. The budget bounds
+        /// the work before the check.
         pub(crate) fn inflate(
             &mut self,
             chunk: &[u8],
@@ -727,27 +727,8 @@ pub(crate) mod on {
             }
         }
 
-        /// Checks the newly inflated part of a text message, so an invalid
-        /// byte fails as soon as it is inflated; a sequence cut at the end
-        /// waits for the next piece unless the message is `complete`.
-        pub(crate) fn check_text(&mut self, msg: &[u8], complete: bool) -> Result<(), WsError> {
-            let rest = msg.get(self.checked..).unwrap_or(&[]);
-            match core::str::from_utf8(rest) {
-                Ok(_) => {
-                    self.checked = msg.len();
-                    Ok(())
-                }
-                Err(e) if e.error_len().is_none() && !complete => {
-                    self.checked += e.valid_up_to();
-                    Ok(())
-                }
-                Err(_) => Err(WsError::InvalidUtf8),
-            }
-        }
-
         pub(crate) fn end_message(&mut self) {
             self.inflating = false;
-            self.checked = 0;
             self.wire = 0;
         }
 

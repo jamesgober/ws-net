@@ -859,3 +859,81 @@ mod props {
         }
     }
 }
+
+/// Fuzz inputs (deflate_message): a compressed text message that is bad
+/// UTF-8 and bad DEFLATE, or bad UTF-8 and over budget, fails the same way
+/// whole and split: inflation decides, then the text is checked whole.
+/// This replays the target's check (`fuzz/fuzz_targets/deflate_message.rs`).
+#[test]
+fn test_fuzz_inputs_same_whole_and_split() {
+    let inputs: [&[u8]; 3] = [
+        &[
+            10, 65, 194, 194, 1, 32, 0, 249, 255, 255, 255, 236, 0, 11, 65, 130, 0, 65, 0,
+        ],
+        &[
+            73, 193, 197, 164, 85, 0, 193, 255, 0, 0, 0, 55, 55, 210, 2, 17, 3, 0, 0, 205, 205,
+        ],
+        &[
+            39, 65, 206, 194, 40, 1, 32, 32, 32, 32, 32, 32, 194, 6, 1, 194, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 193, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255,
+            236, 66, 160, 38, 39, 1, 2, 66, 64, 130, 10, 212, 1, 0, 25, 0, 1, 13, 42, 234, 21,
+        ],
+    ];
+    for data in inputs {
+        let (&select, rest) = data.split_first().unwrap();
+        let make = || {
+            let limits = match select % 3 {
+                0 => Limits::new()
+                    .with_max_frame(200)
+                    .with_max_message(500)
+                    .with_max_output(300)
+                    .with_input_buffer(256)
+                    .with_retain(0),
+                1 => Limits::new(),
+                _ => Limits::new()
+                    .with_max_frame(u64::MAX)
+                    .with_max_message(u64::MAX)
+                    .with_max_output(u64::MAX),
+            };
+            let config = DeflateConfig::new()
+                .with_client_context_takeover(select & 0x08 != 0)
+                .with_client_max_window_bits(8 + (select >> 4) % 8);
+            let client = DeflateConfig::new().with_client_context_takeover(select & 0x08 != 0);
+            pair(config, client).0.with_limits(limits)
+        };
+        let run = |pieces: &[&[u8]]| {
+            let mut conn = make();
+            let mut seen = Vec::new();
+            for piece in pieces {
+                let mut rest = *piece;
+                loop {
+                    let n = conn.feed(rest);
+                    rest = &rest[n..];
+                    loop {
+                        match conn.poll() {
+                            Ok(Event::Text(t)) => seen.push(Ok(t.as_bytes().to_vec())),
+                            Ok(Event::Binary(b)) => seen.push(Ok(b.to_vec())),
+                            Ok(Event::NeedInput | Event::Closed) => break,
+                            Ok(_) => {}
+                            Err(e) => seen.push(Err(e)),
+                        }
+                    }
+                    if rest.is_empty() || n == 0 {
+                        break;
+                    }
+                }
+            }
+            (seen, conn.output().to_vec())
+        };
+        let mut pieces = Vec::new();
+        let mut left = rest;
+        let mut i = 0;
+        while !left.is_empty() {
+            let size = (usize::from(rest[i % rest.len()]) % 64 + 1).min(left.len());
+            pieces.push(&left[..size]);
+            left = &left[size..];
+            i += 1;
+        }
+        assert_eq!(run(&[rest]), run(&pieces), "input {data:?}");
+    }
+}

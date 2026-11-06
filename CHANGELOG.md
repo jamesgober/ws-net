@@ -11,6 +11,37 @@
 
 ## [Unreleased]
 
+### Added
+
+- permessage-deflate (RFC 7692), feature `deflate`, on compress-lib (first
+  party, no dependencies, `no_std` + `alloc`): `DeflateConfig`,
+  `DeflateParams`, `AcceptPolicy::with_deflate`,
+  `ClientHandshake::with_deflate`, `Negotiated::deflate`,
+  `PreparedMessage::with_deflate` and `compressed_len`. Negotiation in
+  both roles with all four parameters and window bits 8 to 15; compressed
+  sends by `SendOptions` and a minimum size (256 bytes); inflation into the
+  reassembly buffer capped at `max_message` while it runs (1009), text
+  validated once inflated; no context takeover unless configured.
+- `WsError::InvalidCompressedData` (1007) for compressed data that is not
+  valid DEFLATE.
+- Autobahn TestSuite sections 12 and 13 (permessage-deflate) in CI, both
+  roles; the `deflate_message` fuzz target; `tests/deflate.rs` with the
+  RFC 7692 section 7.2.3 examples and property tests.
+
+### Changed
+
+- `ServerHandshake::response_fields` borrows the `Negotiated` it is given
+  for as long as the fields live (the extension value is written there).
+  Pass the decision's extensions; a temporary `&Negotiated::none()` kept
+  past its statement must be bound first.
+- `ServerHandshake::accept` and `write_response_with` write the negotiated
+  `sec-websocket-extensions` field.
+
+### Fixed
+
+- `blocking::connect_with` built the client connection without the
+  negotiated extensions.
+
 ---
 
 ## [0.8.0] - 2026-11-06

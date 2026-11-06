@@ -93,8 +93,37 @@ impl Rng {
     }
 }
 
+/// Connects that failed before reaching the server and were tried again.
+static CONNECT_RETRIES: AtomicU64 = AtomicU64::new(0);
+
+/// A TCP connect, tried again when the host loses it before the server
+/// sees it: a SYN dropped on a four-tuple still in TIME_WAIT (Windows keeps
+/// it 120 s), or no ephemeral port free. A shared host with other loopback
+/// churn does both; the server is not involved, so the soak counts these
+/// and goes on.
+fn tcp_connect(addr: SocketAddr) -> TcpStream {
+    let mut tries = 0;
+    loop {
+        match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+            Ok(stream) => return stream,
+            Err(e) => {
+                let lost = matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::AddrInUse
+                        | std::io::ErrorKind::AddrNotAvailable
+                ) || e.raw_os_error() == Some(10055); // WSAENOBUFS
+                tries += 1;
+                assert!(lost && tries < 60, "connect: {e} after {tries} tries");
+                CONNECT_RETRIES.fetch_add(1, Ordering::Relaxed);
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+
 fn connect(addr: SocketAddr) -> blocking::WebSocket<TcpStream> {
-    let stream = TcpStream::connect(addr).unwrap();
+    let stream = tcp_connect(addr);
     stream
         .set_read_timeout(Some(Duration::from_secs(60)))
         .unwrap();
@@ -249,13 +278,14 @@ fn soak_reactor_over_loopback() {
         let heap = HEAP.load(Ordering::Relaxed);
         let stats = server.stats();
         println!(
-            "{:6} s: heap {:8} KiB, open {:5}, accepted {:7}, messages {:10}, sched gap {:5} ms",
+            "{:6} s: heap {:8} KiB, open {:5}, accepted {:7}, messages {:10}, sched gap {:5} ms, connect retries {}",
             start.elapsed().as_secs(),
             heap / 1024,
             stats.open,
             stats.accepted,
             messages.load(Ordering::Relaxed),
-            SCHED_GAP.swap(0, Ordering::Relaxed)
+            SCHED_GAP.swap(0, Ordering::Relaxed),
+            CONNECT_RETRIES.load(Ordering::Relaxed)
         );
         samples.push(heap);
         let now = start.elapsed().as_millis() as u64;
@@ -292,12 +322,13 @@ fn soak_reactor_over_loopback() {
         .copied()
         .unwrap_or(0);
     println!(
-        "early {} KiB, late {} KiB, after close {} KiB (baseline {} KiB), {} messages",
+        "early {} KiB, late {} KiB, after close {} KiB (baseline {} KiB), {} messages, {} connect retries",
         early / 1024,
         late / 1024,
         HEAP.load(Ordering::Relaxed) / 1024,
         baseline / 1024,
-        messages.load(Ordering::Relaxed)
+        messages.load(Ordering::Relaxed),
+        CONNECT_RETRIES.load(Ordering::Relaxed)
     );
     // Heavy-tailed sizes make single samples noisy: allow a margin of one
     // large message per connection, not a trend.

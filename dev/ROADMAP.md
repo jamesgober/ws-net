@@ -110,8 +110,8 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 - [x] Budget audit (spec section 10.3): `tests/budget_audit.rs` finds every heap growth site in `src/` and requires a `// budget:` note naming its guard; 78 sites (D-054). Done in 0.8.
 
 ### v0.9.x - Pre-1.0 polish (before any release candidate)
-- [ ] Revisit every accepted gap, deferred item, and missed target recorded in this file and the decision log; close it or record why it stays open.
-- [ ] Fresh performance pass against tungstenite and the other competitors on the current versions.
+- [x] Revisit every accepted gap, deferred item, and missed target recorded in this file and the decision log; close it or record why it stays open (D-070).
+- [x] Fresh performance pass against tungstenite 0.30.0 (still its latest) and 0.8.0 in one hosted run: small receives 14 to 24% faster than 0.8.0 (`docs/PERFORMANCE.md`, D-070).
 - [x] Small sends behind 0.2.0 (D-033): the fast path skipping the exact size well under the budget and one capacity check per frame landed in 0.8; the remaining cost is the budget and counters, measured and recorded (D-053), to go into `docs/STABILITY-1.0.md`.
 - [x] The Linux 1 MiB receive rows of the hosted harness: a buffer-placement effect of the hosted Linux runner (the same code path 753 µs or 78 µs by heap layout alone, no page faults), not a ws-net cost; recorded (D-052).
 - [x] Extension parameters on parse-net 0.9.1's optional-value parameter parser (D-045), replacing ws-net's own parameter loop; done in 0.8 (D-048).

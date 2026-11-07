@@ -54,6 +54,8 @@
   past its statement must be bound first.
 - `ServerHandshake::accept` and `write_response_with` write the negotiated
   `sec-websocket-extensions` field.
+- A single-frame text message is validated once, not twice: small-message
+  receive 14 to 24% faster than 0.8.0 on the hosted runners.
 - Every rustdoc example runs: the `blocking` module's accept and connect
   examples talk over loopback instead of needing a server.
 - `docs/API.md` final for the 1.0 surface; `docs/STABILITY-1.0.md`, the

@@ -24,28 +24,34 @@ polish exit (`dev/ROADMAP.md`). 1.0 itself needs the owner's explicit go.
 | Integration | http-net (sans-IO and blocking hand-off), net-io (both drivers), tls-net, end to end in CI | `docs/INTEGRATION.md` |
 | Consumers | serve-net's upgrade route and LexerSketch Studio build and pass on the 0.9 API unchanged | D-069 |
 | API | every public item in `docs/API.md`; every rustdoc example runs | `docs/API.md` |
-| Performance | against tungstenite 0.30.0 on hosted runners, three platforms, each shortfall named with its cause | `docs/PERFORMANCE.md` |
+| Performance | against tungstenite 0.30.0 (its latest) and 0.8.0 on hosted runners, three platforms, each shortfall named with its cause; every accepted gap revisited | `docs/PERFORMANCE.md`, D-070 |
 
 ## Open
 
 | Item | What closes it |
 |---|---|
 | 72-hour fuzzing per target (NFR-14) | the runs started 2026-11-06 on all eleven targets, `deflate_message` included, end clean |
-| 24-hour socket soak on net-io's reactor (NFR-21) | a clean 24-hour Linux run on net-io 0.7.0; on 0.6.1 seven connections stopped receiving after 15 hours, a read the reactor did not deliver (D-068) |
+| 24-hour socket soak on net-io's reactor (NFR-21) | a clean 24-hour Linux run on net-io 0.7.0; on 0.6.1 seven connections stopped receiving after 15 hours, a net-io reactor defect fixed for 0.7.0 (D-068) |
 | A gateway consumer | a gateway using the policy, counters, `wipe`, and close on revocation runs end to end (serve-net and the Studio already pass on 0.9 unchanged, D-069) |
-| Accepted gaps | every accepted gap, deferred item, and missed target in `dev/ROADMAP.md` and the decision log closed or recorded as staying open |
-| Performance pass | a fresh comparison on current versions of tungstenite and the others |
 | Release candidates | two weeks of release candidates with no API change |
 | Freeze | after the Studio ships on ws-net (D18) |
 
-## Known shortfalls carried into the audit
+## Accepted shortfalls
 
-- Small sends cost about 2.5 ns more than 0.2.0 on Linux servers: the
+Each was revisited in 0.9 (D-070) and stays, with its reason:
+
+- NFR-8 (20% above the best Rust competitor) holds for small receives and
+  sends, not for the handshake on Linux and macOS (1.02 and 1.12 against
+  tungstenite), where ws-net checks more (the strict head grammar, the Host
+  and Origin policy), nor for one 1 MiB message (level), a single copy and
+  validation in both and bound by memory.
+- NFR-10's 1.5x ASCII validation target: `core::str::from_utf8` already
+  checks ASCII a word at a time; more needs SIMD intrinsics, which
+  `forbid(unsafe_code)` rules out (D-029).
+- Small server sends cost about 2.5 ns more than 0.2.0 on Linux: the
   output budget (the slow-consumer defense) and the counters (D-053).
-- ASCII text is validated by `core::str::from_utf8` once per byte, without
-  the separate fast path of NFR-10's 1.5x target (D-029).
-- The Linux 1 MiB receive rows of the hosted harness depend on where the
-  runner's heap places the buffer, not on ws-net (D-052).
+- The Linux 1 MiB rows of the hosted harness move with the runner's heap
+  placement, 0.19 to 0.93 against tungstenite on the same code (D-052).
 
 ## Go / no-go
 

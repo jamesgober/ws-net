@@ -1497,20 +1497,18 @@ fn poll_inner<'r>(
                     apply_mask(payload, key, 0);
                 }
                 let payload = reader.input.get(start..end).unwrap_or(&[]);
-                if kind == Kind::Text && core::str::from_utf8(payload).is_err() {
-                    return Err(writer.fail(WsError::InvalidUtf8));
-                }
-                // Lent (for `detach_message`) only once it is valid.
-                reader.messages_in = reader.messages_in.saturating_add(1);
-                reader.lent = Some(Lent::Input(kind.into(), start, end));
-                let payload = reader.input.get(start..end).unwrap_or(&[]);
-                return Ok(match kind {
+                // Validated once; counted and lent (for `detach_message`)
+                // only once it is valid.
+                let event = match kind {
                     Kind::Text => match core::str::from_utf8(payload) {
                         Ok(text) => Event::Text(text),
                         Err(_) => return Err(writer.fail(WsError::InvalidUtf8)),
                     },
                     Kind::Binary => Event::Binary(payload),
-                });
+                };
+                reader.messages_in = reader.messages_in.saturating_add(1);
+                reader.lent = Some(Lent::Input(kind.into(), start, end));
+                return Ok(event);
             }
 
             reader.pos += header_len;
@@ -1563,19 +1561,17 @@ fn inflated<'r>(
     kind: Kind,
     writer: &mut Writer,
 ) -> Result<Event<'r>, WsError> {
-    if kind == Kind::Text && core::str::from_utf8(&reader.msg).is_err() {
-        return Err(writer.fail(WsError::InvalidUtf8));
-    }
-    reader.messages_in = reader.messages_in.saturating_add(1);
-    reader.lent = Some(Lent::Inflated(kind.into()));
     let msg = &reader.msg;
-    Ok(match kind {
+    let event = match kind {
         Kind::Text => match core::str::from_utf8(msg) {
             Ok(text) => Event::Text(text),
             Err(_) => return Err(writer.fail(WsError::InvalidUtf8)),
         },
         Kind::Binary => Event::Binary(msg),
-    })
+    };
+    reader.messages_in = reader.messages_in.saturating_add(1);
+    reader.lent = Some(Lent::Inflated(kind.into()));
+    Ok(event)
 }
 
 impl Connection {

@@ -104,9 +104,9 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 
 ## v0.9.0 - Beta
 - [ ] Consumers end to end on 0.8 (moved from 0.8): serve-net's upgrade route, a gateway, the Studio; API changes from their feedback in the decision log.
-- [ ] The Windows socket soak on net-io 0.6.2: the reactor is clean; the blocking driver is repeated on a quiet host (the shared one drops connects on loopback TIME_WAIT, D-066).
+- [x] The Windows socket soak on net-io 0.6.2: 4 hours per driver, 500 clients, both clean; the clients try again a connect the host loses (D-066, D-068).
 - [ ] API review against the plan and the parity matrix; every rustdoc example runnable; `docs/API.md` final.
-- [ ] Fuzzing 72 hours per target; soak 24 hours.
+- [ ] Fuzzing 72 hours per target; soak 24 hours. The Linux blocking pool passed 24 hours; the reactor is repeated on net-io 0.7.0 (7 connections stalled on 0.6.1, D-068).
 - [x] Budget audit (spec section 10.3): `tests/budget_audit.rs` finds every heap growth site in `src/` and requires a `// budget:` note naming its guard; 78 sites (D-054). Done in 0.8.
 
 ### v0.9.x - Pre-1.0 polish (before any release candidate)

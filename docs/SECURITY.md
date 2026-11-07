@@ -152,6 +152,23 @@ with a regression test each (`tests/regressions.rs`):
 | logging | `ServerHandshake`'s `Debug` printed the query; `ClientHandshake`'s printed header values | a token in a query or `Authorization` could reach logs |
 | docs | `accept` did not warn that Tier 1 accepts any `Host` | a private-address service was open to DNS rebinding by default |
 
+In 0.9 a fresh review read the whole crate again, permessage-deflate
+included. Its confirmed findings are fixed with a test each:
+
+| Area | Defect | Effect before the fix |
+|---|---|---|
+| close | a connection built without `with_keepalive` had no timer at all | a peer that never answered the Close held the connection |
+| input | the full input buffer was compacted on every feed | a caller feeding after each event paid a full-buffer copy per event (quadratic) |
+| deflate | inflation in compress-lib 0.6 cost O(output so far) per call | a message split into tiny frames cost quadratic CPU; fixed in compress-lib 0.7 |
+| deflate | a message ending inside a DEFLATE block was accepted | the cut-off tail reached the application as data; 1007 since compress-lib 0.7 |
+| deflate | a compressed message was counted and lent before it was valid | counters and `detach_message` saw a message that then failed |
+| frames | `detach_message` depended on whether a compaction had moved the message | the result changed with how the input was split |
+| timers | `on_time(Millis(u64::MAX))` matched the unset-timer marker | a deadline at the end of the clock never fired |
+| handshake | a client accepted a 101 whose `Upgrade` named something else | a response that is not a WebSocket upgrade opened a connection |
+
+The decompressor also takes a 9-bit window when 8 was agreed, as zlib
+sends; refusing it would break interoperability for 256 bytes of window.
+
 ## Reporting a vulnerability
 
 Open a private security advisory on the repository

@@ -1,9 +1,9 @@
 # ws-net - API Reference
 
 > Complete reference for every public item in `ws-net`, with examples.
-> **Status: pre-1.0 (0.8.0), design locked.** Every item of the 1.0 surface
+> **Status: beta (0.9.0), design locked.** Every item of the 1.0 surface
 > is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
-> lands in; items marked shipped are documented in full below. The surface is
+> landed in, and every one is shipped and documented below. The surface is
 > frozen at `1.0.0`, after LexerSketch Studio ships on it. See
 > [`../dev/ROADMAP.md`](../dev/ROADMAP.md) and [`../dev/PLAN.md`](../dev/PLAN.md).
 
@@ -340,11 +340,13 @@ checking it is the defense.
   lists the server's, in its order of preference; the first one the client
   offered is selected, and `require_protocol` refuses a client that offered
   none. `ServerHandshake::select_protocol` is the same choice without a
-  policy. Extensions are not negotiated in 0.3 (from 0.4).
+  policy.
 
 A refused Origin is `HandshakeError::OriginRefused`, answered with
-`HTTP/1.1 403 Forbidden`. Host allowlists (DNS rebinding) land in 0.4; until
-then compare [`host()`](#serverhandshake) with your own authority.
+`HTTP/1.1 403 Forbidden`, and so is a `Host` outside
+[`AcceptPolicy::with_hosts`](#acceptpolicy-and-decision)
+(`HostRefused`, the DNS rebinding defense). Without an allowlist any `Host`
+is accepted: compare [`host()`](#serverhandshake) with your own authority.
 
 ### Behind an HTTP layer
 
@@ -619,7 +621,7 @@ assert_eq!(conn.stats().bytes_out, 1004);
 | Item | Description |
 |---|---|
 | `poll_split(&mut self) -> Result<(Event<'_>, Sender<'_>), WsError>` | As `poll`, plus a `Sender` over the output side: reply while the event still borrows the message. |
-| `Sender::{send_text, send_binary, send_ping, send_pong, close, send_prepared}` | The `Connection` rules and budget. |
+| `Sender::{send_text, send_binary, send_text_with, send_binary_with, send_ping, send_pong, close, send_prepared}` | The `Connection` rules and budget. |
 | `detach_message(&mut self, into: &mut Vec<u8>) -> Option<MessageKind>` | Right after a `Text` or `Binary` event, moves its bytes into `into`: a buffer swap for reassembled messages (no copy), one copy for single-frame ones. `None` otherwise, or after more input was fed. |
 | `send(&mut self, message: &Message) -> Result<(), WsError>` | Sends an owned [`Message`](#message-and-messagekind). |
 | `send_text_with(&mut self, text, options: SendOptions)`, `send_binary_with(&mut self, data, options)` | Per-message [`SendOptions`](#preparedmessage): `uncompressed()` for messages carrying secrets, `compressed()` to compress whatever the size. No effect on the wire without [permessage-deflate](#permessage-deflate). |
@@ -1345,7 +1347,8 @@ assert!(out.ends_with(b"retry-after: 5\r\n\r\n"));
 
 ```rust,ignore
 pub fn parse(value: &[u8]) -> Offers<'_>;             // Item = Result<Offer<'_>, HandshakeError>
-pub struct Offer<'a>;                                  // name(), params()
+pub struct Offer<'a>;                                  // name(), params() -> Params<'a>
+pub struct Params<'a>;                                 // Iterator<Item = Param<'a>>
 pub struct Param<'a> { pub name: &'a str, pub value: Option<&'a str> }
 #[non_exhaustive] pub struct Negotiated;               // none(), is_empty(), deflate()
 pub const MAX_OFFERS: usize = 16;
@@ -1403,6 +1406,7 @@ pub struct DeflateParams {
 | `with_server_context_takeover(bool)`, `with_client_context_takeover(bool)` | off, off | Whether each end may keep its compression window between messages: better ratios for similar messages, at the cost of the window per connection and of letting one message probe another (RFC 7692 section 8). |
 | `with_server_max_window_bits(u8)`, `with_client_max_window_bits(u8)` | 15, 15 | The largest windows, clamped to 8 to 15. |
 | `with_level(u8)`, `with_min_size(usize)` | 1, 256 | Compression level 0 to 9; messages shorter than `min_size` go uncompressed. |
+| `server_context_takeover`, `client_context_takeover`, `server_max_window_bits`, `client_max_window_bits`, `level`, `min_size` | | The configured values. |
 | `AcceptPolicy::with_deflate(DeflateConfig)` | | The server accepts the first offer, in the client's order, that the configuration can satisfy; offers with unknown, repeated, or invalid parameters are declined. A configuration asking for a client window under 15 bits declines a client that did not offer `client_max_window_bits` (the response may not limit it). |
 | `ClientHandshake::with_deflate(DeflateConfig)` | | The client offers one element: `server_no_context_takeover` unless server takeover is allowed, `client_no_context_takeover` unless its own is, `server_max_window_bits` below 15, and `client_max_window_bits`. A response that breaks RFC 7692 section 7 is `HandshakeError::InvalidExtensions`. Read it with `verify_full`, `HeadReader::client`, or the `blocking` module, which return the agreement for `connection`. |
 | `Negotiated::deflate(&self) -> Option<&DeflateParams>` | | The agreement. |
@@ -1476,6 +1480,8 @@ Feature `std`. A `Read + Write` adapter, comparable to tungstenite's
 | `WebSocket::from_upgraded(stream, leftover: &[u8], connection: Connection)` | Continues after an HTTP layer's upgrade (http-net's `Upgraded`). |
 | `read(&mut self) -> Result<Message, Error>` | The next message, Ping, Pong, or Close; replies are written before it returns or blocks; `Error::Closed` after the closing handshake. |
 | `send_text`, `send_binary`, `send`, `ping`, `close`, `flush` | Queue and write fully. |
+| `send_text_with`, `send_binary_with` | With [`SendOptions`](#preparedmessage), as on `Connection`. |
+| `with_keepalive(self, keepalive: Keepalive) -> WebSocket<S>` | The keepalive rules; connections from `accept`, `connect`, and their `_with` forms start with the 5 s close timeout only. |
 | `connection`, `connection_mut`, `get_ref`, `get_mut`, `into_inner` | Access. |
 | `Error { Io, Protocol(WsError), Handshake(HandshakeError), Closed }` | `#[non_exhaustive]`, `Display`, `std::error::Error`. |
 
@@ -1655,9 +1661,8 @@ allocator, no dependencies of its own), `mod-rand` (feature `std`), and
 
 ## The 1.0 API (design lock)
 
-The whole surface planned for 1.0, with the version each item lands in.
-Shipped items are documented above; planned ones are fixed in name, shape,
-and behaviour here, so consumers can design against them. Requirement and
+The whole 1.0 surface, with the version each item landed in. Every item
+is shipped and documented above. Requirement and
 item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 
 **Tier 1** (the common case): `accept`, `Acceptor::new`, `Connection::server`,
@@ -1708,6 +1713,8 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | `FrameHeader::with_rsv` | 0.5 |
 | `extension` module: `parse`, `Offers`, `Offer` (`name`, `params`), `Param`, `Negotiated` (`none`, `is_empty`), `MAX_OFFERS`, `MAX_PARAMS` | 0.4 |
 | `blocking` module (feature `std`): `accept`, `accept_with`, `connect`, `connect_with`, `WebSocket` (`from_upgraded`, `read`, `send_text`, `send_binary`, `send`, `ping`, `close`, `flush`, `connection`, `connection_mut`, `get_ref`, `get_mut`, `into_inner`), `Error` | 0.4 |
+| `Stats::data_frames_in` | 0.8 |
+| `Sender::send_text_with`, `send_binary_with`; `blocking::WebSocket::send_text_with`, `send_binary_with`, `with_keepalive` | 0.9 |
 | `SendOptions`, `send_text_with`, `send_binary_with` | 0.5 |
 | permessage-deflate (feature `deflate`): `DeflateConfig`, `DeflateParams`, `PreparedMessage::with_deflate`, `compressed_len`, `Negotiated::deflate` | 0.9 (back from 1.1 once compress-lib was published; `dev/PLAN.md` D-056) |
 | `VERSION` | 0.3 |

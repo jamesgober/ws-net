@@ -2,19 +2,31 @@
 //! `TcpStream`, a TLS stream, an in-memory pipe. It drives the sans-IO
 //! [`Connection`] for you, the way a `std::net` program expects.
 //!
-//! ```no_run
-//! use std::net::TcpListener;
-//! use ws_net::{Message, blocking};
+//! ```
+//! use std::{net::{TcpListener, TcpStream}, thread};
+//! use ws_net::{CloseCode, Message, blocking};
 //!
-//! let listener = TcpListener::bind("127.0.0.1:9001")?;
-//! for stream in listener.incoming() {
-//!     let mut ws = blocking::accept(stream?)?; // same-origin policy, 101 written
+//! let listener = TcpListener::bind("127.0.0.1:0")?;
+//! let addr = listener.local_addr()?;
+//! let server = thread::spawn(move || -> Result<(), blocking::Error> {
+//!     let (stream, _) = listener.accept()?;
+//!     let mut ws = blocking::accept(stream)?; // same-origin policy, 101 written
 //!     while let Ok(message) = ws.read() {
 //!         if message.is_data() {
 //!             ws.send(&message)?; // echo
 //!         }
 //!     }
-//! }
+//!     Ok(())
+//! });
+//!
+//! let mut ws = blocking::connect(TcpStream::connect(addr)?, &addr.to_string(), "/")?;
+//! ws.send_text("hello")?;
+//! assert_eq!(ws.read()?, Message::Text("hello".into()));
+//! ws.close(CloseCode::NORMAL, "")?;
+//! // The peer's answer, then the end of the closing handshake.
+//! assert_eq!(ws.read()?, Message::Close(Some((CloseCode::NORMAL, String::new()))));
+//! assert!(matches!(ws.read(), Err(blocking::Error::Closed)));
+//! server.join().expect("server thread")?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
@@ -154,14 +166,24 @@ pub fn accept<S: Read + Write>(stream: S) -> Result<WebSocket<S>, Error> {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use std::net::TcpListener;
 /// use ws_net::{AcceptPolicy, OriginPolicy, blocking};
+/// # use ws_net::ClientHandshake;
 ///
 /// let policy = AcceptPolicy::new().with_origins(OriginPolicy::allow(&["https://app.example"])?);
-/// let (stream, _) = TcpListener::bind("127.0.0.1:0")?.accept()?;
-/// let (mut ws, request) = blocking::accept_with(stream, &policy)?;
-/// println!("connected to {}", request.target());
+/// let listener = TcpListener::bind("127.0.0.1:0")?;
+/// # let addr = listener.local_addr()?;
+/// # let client = std::thread::spawn(move || {
+/// #     let hs = ClientHandshake::try_new().unwrap().with_origin("https://app.example");
+/// #     let stream = std::net::TcpStream::connect(addr).unwrap();
+/// #     blocking::connect_with(stream, &addr.to_string(), "/chat", &hs).unwrap();
+/// # });
+/// let (stream, _) = listener.accept()?;
+/// let (ws, request) = blocking::accept_with(stream, &policy)?;
+/// assert_eq!(request.target(), "/chat");
+/// # drop(ws);
+/// # client.join().unwrap();
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn accept_with<S: Read + Write>(
@@ -203,14 +225,27 @@ pub fn accept_with<S: Read + Write>(
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use std::net::TcpStream;
-/// use ws_net::blocking;
+/// use ws_net::{Message, blocking};
 ///
-/// let mut ws = blocking::connect(TcpStream::connect("127.0.0.1:9001")?, "127.0.0.1:9001", "/")?;
+/// # let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+/// # let addr = listener.local_addr()?.to_string();
+/// # let server = std::thread::spawn(move || {
+/// #     let mut ws = blocking::accept(listener.accept().unwrap().0).unwrap();
+/// #     while let Ok(message) = ws.read() {
+/// #         if message.is_data() {
+/// #             ws.send(&message).unwrap();
+/// #         }
+/// #     }
+/// # });
+/// let mut ws = blocking::connect(TcpStream::connect(&addr)?, &addr, "/")?;
 /// ws.send_text("hello")?;
-/// println!("{:?}", ws.read()?);
+/// assert_eq!(ws.read()?, Message::Text("hello".into()));
 /// ws.close(ws_net::CloseCode::NORMAL, "")?;
+/// # assert!(matches!(ws.read()?, Message::Close(_)));
+/// # assert!(matches!(ws.read(), Err(blocking::Error::Closed)));
+/// # server.join().unwrap();
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn connect<S: Read + Write>(stream: S, host: &str, path: &str) -> Result<WebSocket<S>, Error> {
@@ -227,14 +262,23 @@ pub fn connect<S: Read + Write>(stream: S, host: &str, path: &str) -> Result<Web
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use std::net::TcpStream;
 /// use ws_net::{ClientHandshake, blocking};
+/// # use ws_net::AcceptPolicy;
 ///
+/// # let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+/// # let addr = listener.local_addr()?.to_string();
+/// # let server = std::thread::spawn(move || {
+/// #     let policy = AcceptPolicy::new().with_protocols(&["rpc.v2"]).unwrap();
+/// #     blocking::accept_with(listener.accept().unwrap().0, &policy).unwrap();
+/// # });
 /// let hs = ClientHandshake::try_new()?.with_protocols(&["rpc.v2"]).with_header("authorization", b"Bearer t");
-/// let stream = TcpStream::connect("127.0.0.1:9001")?;
-/// let (ws, protocol) = blocking::connect_with(stream, "127.0.0.1:9001", "/rpc", &hs)?;
+/// let stream = TcpStream::connect(&addr)?;
+/// let (ws, protocol) = blocking::connect_with(stream, &addr, "/rpc", &hs)?;
 /// assert_eq!(protocol.as_deref(), Some("rpc.v2"));
+/// # drop(ws);
+/// # server.join().unwrap();
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn connect_with<S: Read + Write>(

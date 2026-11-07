@@ -103,9 +103,9 @@ Exit: Autobahn strict pass, fuzz 24 hours clean, soak 4 hours, every threat test
 Exit: two consumers end to end with no open P0 or P1 defect; API changes from feedback recorded in the decision log. (Met by the integrations above for the release; the consumer runs themselves are 0.9's first item.)
 
 ## v0.9.0 - Beta
-- [ ] Consumers end to end on 0.8 (moved from 0.8): serve-net's upgrade route, a gateway, the Studio; API changes from their feedback in the decision log.
+- [x] Consumers end to end (moved from 0.8): serve-net's upgrade route (22 WebSocket tests) and the Studio build and pass unchanged on the 0.9 API; no API change came from them (D-069). **Moved to the 1.0 audit (reason: no gateway exists to run yet):** the gateway consumer, an open row of `docs/STABILITY-1.0.md`.
 - [x] The Windows socket soak on net-io 0.6.2: 4 hours per driver, 500 clients, both clean; the clients try again a connect the host loses (D-066, D-068).
-- [ ] API review against the plan and the parity matrix; every rustdoc example runnable; `docs/API.md` final.
+- [x] API review: every public item in `docs/API.md` and its 1.0 table, every rustdoc example runnable (the `blocking` ones over loopback), `docs/API.md` final for 0.9.
 - [ ] Fuzzing 72 hours per target; soak 24 hours. The Linux blocking pool passed 24 hours; the reactor is repeated on net-io 0.7.0 (7 connections stalled on 0.6.1, D-068).
 - [x] Budget audit (spec section 10.3): `tests/budget_audit.rs` finds every heap growth site in `src/` and requires a `// budget:` note naming its guard; 78 sites (D-054). Done in 0.8.
 
@@ -117,8 +117,8 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 - [x] Extension parameters on parse-net 0.9.1's optional-value parameter parser (D-045), replacing ws-net's own parameter loop; done in 0.8 (D-048).
 - [x] permessage-deflate on compress-lib, back in 1.0: compress-lib 0.5.0 is on crates.io before 0.9 (D-056). Behind a non-default `deflate` feature on `compress_lib::message` (D-057); the decompressed size bounded by `max_message` (1009); the Autobahn 12.x and 13.x cases strict in CI; the `deflate_message` fuzz target. Its 72-hour run is part of the 0.9 fuzzing below.
 - [x] The end-to-end benchmark's payloads above 1 KiB once net-io 0.6.1 reuses output buffers (D-044): 64 KiB rows in 0.8. The 24-hour socket soak is the 0.9 soak above.
-- [ ] Fresh security review of the whole crate.
-- [ ] `docs/STABILITY-1.0.md` draft as the 1.0 readiness note: what is done, what is open, the go/no-go list.
+- [x] Fresh security review of the whole crate, permessage-deflate included: findings fixed in 0.9 (D-061 to D-065, D-067), recorded in `docs/SECURITY.md`.
+- [x] `docs/STABILITY-1.0.md` draft as the 1.0 readiness note: what is done, what is open, the go/no-go list.
 - [ ] Release candidates with no API change for two weeks before 1.0.
 
 ## v1.0.0 - Stable

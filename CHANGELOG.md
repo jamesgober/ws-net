@@ -54,6 +54,10 @@
   past its statement must be bound first.
 - `ServerHandshake::accept` and `write_response_with` write the negotiated
   `sec-websocket-extensions` field.
+- Every rustdoc example runs: the `blocking` module's accept and connect
+  examples talk over loopback instead of needing a server.
+- `docs/API.md` final for the 1.0 surface; `docs/STABILITY-1.0.md`, the
+  1.0 readiness note; the 0.9 security review in `docs/SECURITY.md`.
 
 ### Fixed
 

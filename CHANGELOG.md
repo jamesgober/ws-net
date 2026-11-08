@@ -11,6 +11,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `interop/net-io` on net-io 0.7.0 (its reactor fix for a reader that lost
+  its place on the starved list, and the output-buffer reuse); no source
+  change. The 24-hour reactor soak runs on it.
+
 ---
 
 ## [0.9.0] - 2026-11-08

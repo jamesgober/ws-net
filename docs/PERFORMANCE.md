@@ -1,8 +1,9 @@
 # ws-net - Performance
 
-Measured numbers, how they were taken, and how to reproduce them. Every number here comes from
-one run of `.github/workflows/bench.yml` on GitHub's hosted runners, so the three platforms ran
-the same commit (`4359c49`, run 41899339504) at the same time. Hosted runners are shared virtual
+Measured numbers, how they were taken, and how to reproduce them. Every table comes from one run
+of `.github/workflows/bench.yml` on GitHub's hosted runners, so the three platforms ran the same
+commit at the same time; each section names its run. The 0.9 pass is first; the tables after it
+are the 0.6 to 0.8 record (commit `4359c49`, run 41899339504). Hosted runners are shared virtual
 machines: compare rows within one run and one platform, never across runs. The development
 machine (shared by many builds, load near 40 on 32 cores) was too noisy to publish from.
 
@@ -21,6 +22,47 @@ machine (shared by many builds, load near 40 on 32 cores) was too noisy to publi
   in this repository.
 - Reproduce: `cargo bench --bench bench` in the crate; `cargo bench --bench compare` in `bench-compare/`;
   `python3 bench-compare/summary.py <criterion dir> [baseline]` prints the tables.
+
+## 0.9.0
+
+Run 42403822331 on commit `9067ecd`: this commit against v0.8.0 built in the
+same job (`gh workflow run bench.yml -f baseline=v0.8.0`), then against
+tungstenite 0.30.0, still its latest release.
+
+| Benchmark | Linux x86_64 | macOS arm64 | Windows x86_64 |
+|---|---:|---:|---:|
+| `receive_100k/small_messages` | 2.46 ms (-13.8%) | 1.79 ms (-23.5%) | 2.18 ms (-13.6%) |
+| `receive_1mib/text_utf8` | 553 µs (-9.4%) | 560 µs (-0.2%) | 482 µs (-45.9%) |
+| `receive_1mib/binary` | 76.1 µs (+1.8%) | 59.8 µs (+0.3%) | 484 µs (-0.8%) |
+| `send_100k/server_unmasked` | 1.31 ms (+5.4%) | 1.6 ms (-4.0%) | 2.97 ms (+1.1%) |
+| `send_100k/client_masked_os` | 3.21 ms (-0.4%) | 3.44 ms (+0.4%) | 4.1 ms (-0.1%) |
+| `handshake/from_head_100k` | 272 ms (-2.8%) | 243 ms (+0.5%) | 225 ms (+5.0%) |
+| `keepalive/on_time_idle` | 903 µs (-17.1%) | 402 µs (+8.8%) | 763 µs (-0.0%) |
+| `flood/empty_continuations` | 20.5 ms (+11.0%) | 12.2 ms (+2.3%) | 14.1 ms (+2.8%) |
+| `broadcast/prepared_10k` | 93.2 µs (+2.4%) | 79.4 µs (-4.3%) | 151 µs (+1.7%) |
+| `mask_1mib/in_place` | 21.3 µs (-0.5%) | 22.1 µs (-12.0%) | 18.3 µs (-1.3%) |
+
+Small-message receive is 14 to 24% faster than 0.8.0: a single-frame text
+message is validated once (since 0.7's lending fix it was validated twice,
+once to decide and once to build the event). permessage-deflate costs a
+connection without it a few branches per frame and nothing measurable.
+The flood row is up 11% on Linux and within 3% elsewhere; it is watched in
+the next run rather than read as a cost.
+
+Against tungstenite in the same run (tungstenite's median over ws-net's):
+
+| Workload | Linux | macOS | Windows |
+|---|---:|---:|---:|
+| Receive 100,000 small masked messages | 2.13 | 1.75 | 2.44 |
+| Send 100,000 small messages (server) | 2.42 | 2.49 | 4.85 |
+| Send 100,000 small messages (client) | 1.61 | 1.80 | 3.47 |
+| Accept 10,000 browser upgrade requests | 1.02 | 1.12 | 1.48 |
+| Receive one 1 MiB binary message | 0.19 | 1.00 | 1.23 |
+| Receive one 1 MiB text message | 0.66 | 0.99 | 1.08 |
+
+The Linux 1 MiB rows are the runner's heap placement (below): in run
+42401336990, an hour earlier on the same code but the validation fix, the
+same rows were 0.93 and 0.89.
 
 ## ws-net against tungstenite 0.30.0
 

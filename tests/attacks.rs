@@ -1,8 +1,8 @@
 //! One test per threat in the plan's threat table, named
 //! `test_attack_<threat>_<expected>`. Each asserts the defense's observable
 //! effect: a refusal, a close code, or bounded work. This file grows with
-//! every version; 0.7.0 completed it (permessage-deflate threats T-19 to
-//! T-21 arrive with the `deflate` feature, planned for 1.1).
+//! every version; 0.7.0 completed it. The permessage-deflate threats T-19
+//! to T-21 are tested in `tests/deflate.rs`, behind the `deflate` feature.
 
 mod common;
 

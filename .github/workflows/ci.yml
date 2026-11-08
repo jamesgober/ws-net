@@ -67,6 +67,8 @@ jobs:
         run: cargo check --target i686-unknown-linux-gnu --all-targets
       - name: Check (no default features)
         run: cargo check --target i686-unknown-linux-gnu --no-default-features
+      - name: Check (no_std with deflate)
+        run: cargo check --target i686-unknown-linux-gnu --no-default-features --features deflate
       - name: Package
         run: cargo package --allow-dirty
 
@@ -78,8 +80,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build the test peers
-        run: cargo build --release --example autobahn_server --example autobahn_client
+      - name: Build the test peers (with permessage-deflate for 12.x and 13.x)
+        run: cargo build --release --features deflate --example autobahn_server --example autobahn_client
       - name: Pull the suite
         run: docker pull crossbario/autobahn-testsuite:25.10.1
       - name: Server role (fuzzingclient)

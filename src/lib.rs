@@ -115,6 +115,7 @@ mod base64;
 pub mod blocking;
 mod close;
 mod conn;
+mod deflate;
 mod error;
 pub mod extension;
 pub mod frame;
@@ -130,6 +131,9 @@ mod sha1;
 
 pub use close::{CloseCode, CloseFrame};
 pub use conn::{Connection, Event, Role, Sender, State};
+#[cfg(feature = "deflate")]
+#[cfg_attr(docsrs, doc(cfg(feature = "deflate")))]
+pub use deflate::on::{DeflateConfig, DeflateParams};
 pub use error::{HandshakeError, WsError};
 pub use handshake::{
     AcceptKey, ClientHandshake, HeadReader, ServerHandshake, Verified, accept_key,

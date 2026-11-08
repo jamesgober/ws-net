@@ -20,8 +20,10 @@ authority, intermediaries (proxy caches), and secrets inside messages.
 The crate forbids `unsafe` code (`#![forbid(unsafe_code)]`), has no
 third-party runtime dependency (parse-net and mod-rand are first party with
 no dependencies of their own), and has no reachable panic: `unwrap`,
-`expect`, `panic!`, `unreachable!`, and indexing that can fail are denied by
-the lint wall, and the fuzz targets check it.
+`expect`, `panic!`, and `unreachable!` are denied by the lint wall, peer
+input is read with `get` and checked slicing, the remaining fixed-size
+indexing (SHA-1, base64, frame headers) was checked by hand to stay in
+bounds, and the fuzz targets check all of it.
 
 ## Threats, defenses, tests
 
@@ -46,7 +48,9 @@ Every test named `test_attack_*` is in `tests/attacks.rs`.
 | T-16 | Idle connections | `with_idle_timeout` (1001); `release_memory` frees all heap | the same test; `test_attack_many_idle_connections_hold_no_heap` | 0 heap when idle |
 | T-17 | Slow consumers | `Limits::with_max_output` refuses a send past the budget (`OutputFull`); 262 bytes kept for Pong and Close | `test_attack_slow_consumer_refused_at_budget_close_still_fits`, a property under random sends | one comparison per send (about 2.4 ns, `docs/PERFORMANCE.md`) |
 | T-18 | Memory per connection across many connections | inline size at most 512 bytes; idle heap 0 after `release_memory`; every buffer budgeted | `test_attack_many_idle_connections_hold_no_heap`, `tests/memory.rs`, the soak | none |
-| T-19 to T-21 | Decompression bombs, compression side channels, compression context memory | permessage-deflate is not implemented; a client refuses a response that accepts an extension, and a server declines every offer | the extension tests | none (planned for 1.1 with its own defenses) |
+| T-19 | Decompression bomb: a small compressed message that inflates to gigabytes (the class of CVE-2026-1526 and CVE-2026-15709) | feature `deflate` only: inflation writes into the reassembly buffer with its output capped at `max_message` while it runs (1009), never checked after; the compressed size of a message is capped too (`max_message` plus a sixty-fourth plus 1 KiB) | `test_bomb_stops_at_the_budget` (16 MiB of zeros against a 1 MiB budget, memory checked on every poll), `test_inflated_size_budget_exact_and_one_over`, `prop_inflate_within_budget`, the `deflate_message` fuzz target, `test_inflate_fed_byte_by_byte_is_linear` | one comparison per output chunk; inflation costs O(input + output) per call on compress-lib 0.7 (4 MiB fed one byte per poll in under 3 s in a debug build; 0.6.0 was quadratic, D-062) |
+| T-20 | Compression side channels (CRIME, BREACH style: attacker-chosen data compressed with a secret leaks it through sizes) | `deflate` is not a default feature; a server declines unless its policy has `with_deflate`; no context takeover by default in either direction, so one message cannot probe another; `SendOptions::uncompressed()` per message; nothing under 256 bytes compressed by default | `test_send_options_and_min_size`, `test_no_takeover_back_reference_into_previous_message_fails` | the compression ratio of takeover |
+| T-21 | Compression memory across many connections | engines built on first use; no window kept without takeover; `release_memory` drops engines that hold no context; window bits capped by configuration; `memory_in_use` counts them | `test_memory_released_and_wiped` | `wipe` zeroes both engines' windows (compress-lib's `wipe`) before dropping them; about 12 KiB per decompressor and 330 KiB per level-1 compressor at 15 bits while in use (compress-lib's figures) |
 | T-22 | Invalid UTF-8 passed downstream | validated once per byte, failing at the first bad byte (1007), across fragments and reads | `test_attack_invalid_utf8_fails_1007`, Autobahn section 6, the UTF-8 property | linear |
 | T-23 | Log injection through close reasons | the reason is delivered verbatim and documented as peer text | `test_attack_close_reason_control_characters_delivered_verbatim` | none |
 | T-24 | Close-handshake hangs | `with_close_timeout` (5 s default); `should_close_transport` | the timeout test | 4 to 9 ns per tick |
@@ -54,7 +58,7 @@ Every test named `test_attack_*` is in `tests/attacks.rs`.
 | T-26 | A revoked session keeps its socket | `close(POLICY_VIOLATION, ..)` at any time, even mid-message; `wipe()` | `test_attack_revoked_session_close_1008_mid_message_then_input_ignored` | none |
 | T-27 | Cross-protocol bytes after the upgrade | strict frame rules fail at the first bad byte (1002) | `test_attack_http_bytes_after_upgrade_fail_1002` | none |
 | T-28 | Allocator exhaustion aborting the process | `try_reserve_exact` on reassembly growth: `AllocationFailed` (1011) | `tests/memory.rs` scenario 7 with a failing allocator; `test_attack_allocation_failure_closes_1011` | one branch per growth |
-| T-29 | Information leaks through `Debug`, `Display`, or errors | no payload, key, or seed in either; `PreparedMessage` prints lengths only | `test_attack_debug_and_display_leak_no_payload` | none |
+| T-29 | Information leaks through `Debug`, `Display`, or errors | no key or seed in either; errors, `Connection`, `ServerHandshake`, `ClientHandshake`, and `PreparedMessage` print no payload, query, or header value. The payload containers `Event`, `Message`, and `CloseFrame` print their payload, as their `Debug` exists to do: do not log them where the data is secret | `test_attack_debug_and_display_leak_no_payload` | none |
 | T-30 | Message-content attacks (JSON bombs) | out of scope (the application); ws-net bounds the size | n/a | n/a |
 
 Memory is bounded by configuration, never by input (NFR-5), and
@@ -79,15 +83,17 @@ guarantee belong in a key vault, not in WebSocket buffers.
 ## Conformance
 
 The Autobahn TestSuite (`crossbario/autobahn-testsuite:25.10.1`) runs in CI
-on every change, in both roles, sections 1 to 10, with a strict check
-(`autobahn/check.py`: every case OK in behavior and close behavior;
-NON-STRICT counts as a failure). Result since 0.5.0: 301 cases, 0 failures
-as a server and as a client. Cases 7.1.6, 7.13.1, and 7.13.2 are
-informational by the suite's own design.
+on every change, in both roles, with a strict check (`autobahn/check.py`:
+every case OK in behavior and close behavior; NON-STRICT counts as a
+failure). From 0.5.0 to 0.8.0, sections 1 to 10: 301 cases, 0 failures as a
+server and as a client. From 0.9, with the `deflate` feature, sections 1 to
+13 (12 and 13 are permessage-deflate): 517 cases, 0 failures in both roles.
+Cases 7.1.6, 7.13.1, and 7.13.2 are informational by the suite's own
+design.
 
 ## Fuzzing
 
-Ten cargo-fuzz targets (`fuzz/`), the corpus outside the repository:
+Eleven cargo-fuzz targets (`fuzz/`), the corpus outside the repository:
 
 | Target | Input | Oracle |
 |---|---|---|
@@ -100,6 +106,7 @@ Ten cargo-fuzz targets (`fuzz/`), the corpus outside the repository:
 | `origin_policy` | allowlist entry, Origin, Host | an identical origin is permitted; nothing but http or https is |
 | `handshake_key` | `Sec-WebSocket-Key` values | accepted exactly when canonical base64 of 16 bytes |
 | `differential_tungstenite` | client bytes | what ws-net and tungstenite 0.30.0 deliver agrees as far as both go |
+| `deflate_message` | bytes to a server that negotiated permessage-deflate, window and takeover from the input | no panic; split invariance; whole output frames; memory within the bounds |
 
 Run: `fuzz/run-all.sh 24` (WSL or Linux, nightly). The record of each run
 is below; every crash becomes a regression test before it is fixed.
@@ -124,6 +131,32 @@ review fixes. No crash, no timeout, no out-of-memory, no artifact.
 | `connection_server` | 245 million | none |
 | `differential_tungstenite` | 245 million | none |
 
+### 0.9.0: 2026-11-06 to 2026-11-07
+
+The 72-hour runs (NFR-14), on the 0.9 code, were cut short together at
+2026-11-07T19:56Z when the shared host restarted WSL; libFuzzer reports
+the interruption, not a finding. The ten targets ran 32 hours 6 minutes,
+`deflate_message` 24 hours 50 minutes (on compress-lib 0.7), so each
+passed the 24-hour bar again. No crash, no out-of-memory, no leak. 58
+reported timeouts were WSL clock steps: each input replayed and passed.
+The 14 inputs kept as slow replay in about a second each. 14.55 billion
+inputs in all. Both runs restarted on 2026-11-08 from the corpora they
+grew, for the full 72 hours before 1.0.
+
+| Target | Inputs run | Findings |
+|---|---:|---|
+| `frame_header` | 4.91 billion | none |
+| `extension_parse` | 2.42 billion | none |
+| `handshake_key` | 2.12 billion | none |
+| `origin_policy` | 1.96 billion | none |
+| `server_head` | 1.33 billion | none |
+| `client_head` | 845 million | none |
+| `connection_api` | 265 million | none |
+| `connection_server` | 257 million | none |
+| `connection_client` | 194 million | none |
+| `differential_tungstenite` | 137 million | none |
+| `deflate_message` | 118 million | none |
+
 ## Review
 
 Before 0.7.0 two independent reviews read the engine and the handshake
@@ -145,6 +178,23 @@ with a regression test each (`tests/regressions.rs`):
 | handshake | empty extension list elements across fields were stored as is | `extensions()` could fail on a head that was accepted |
 | logging | `ServerHandshake`'s `Debug` printed the query; `ClientHandshake`'s printed header values | a token in a query or `Authorization` could reach logs |
 | docs | `accept` did not warn that Tier 1 accepts any `Host` | a private-address service was open to DNS rebinding by default |
+
+In 0.9 a fresh review read the whole crate again, permessage-deflate
+included. Its confirmed findings are fixed with a test each:
+
+| Area | Defect | Effect before the fix |
+|---|---|---|
+| close | a connection built without `with_keepalive` had no timer at all | a peer that never answered the Close held the connection |
+| input | the full input buffer was compacted on every feed | a caller feeding after each event paid a full-buffer copy per event (quadratic) |
+| deflate | inflation in compress-lib 0.6 cost O(output so far) per call | a message split into tiny frames cost quadratic CPU; fixed in compress-lib 0.7 |
+| deflate | a message ending inside a DEFLATE block was accepted | the cut-off tail reached the application as data; 1007 since compress-lib 0.7 |
+| deflate | a compressed message was counted and lent before it was valid | counters and `detach_message` saw a message that then failed |
+| frames | `detach_message` depended on whether a compaction had moved the message | the result changed with how the input was split |
+| timers | `on_time(Millis(u64::MAX))` matched the unset-timer marker | a deadline at the end of the clock never fired |
+| handshake | a client accepted a 101 whose `Upgrade` named something else | a response that is not a WebSocket upgrade opened a connection |
+
+The decompressor also takes a 9-bit window when 8 was agreed, as zlib
+sends; refusing it would break interoperability for 256 bytes of window.
 
 ## Reporting a vulnerability
 

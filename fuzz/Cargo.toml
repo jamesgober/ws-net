@@ -12,7 +12,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-ws-net        = { path = ".." }
+ws-net        = { path = "..", features = ["deflate"] }
 tungstenite   = { version = "=0.30.0", default-features = false }
 
 [[bin]]
@@ -81,6 +81,13 @@ bench = false
 [[bin]]
 name = "differential_tungstenite"
 path = "fuzz_targets/differential_tungstenite.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "deflate_message"
+path = "fuzz_targets/deflate_message.rs"
 test = false
 doc = false
 bench = false

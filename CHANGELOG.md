@@ -13,6 +13,75 @@
 
 ---
 
+## [0.9.0] - 2026-11-08
+
+Beta: permessage-deflate (RFC 7692), the 1.0 API surface final in
+`docs/API.md`, a fresh security review, and the 0.9 performance pass. The
+API is designed as it will freeze; changes from here need a reason in
+`docs/STABILITY-1.0.md`.
+
+### Added
+
+- permessage-deflate (RFC 7692), feature `deflate`, on compress-lib (first
+  party, no dependencies, `no_std` + `alloc`): `DeflateConfig`,
+  `DeflateParams`, `AcceptPolicy::with_deflate`,
+  `ClientHandshake::with_deflate`, `Negotiated::deflate`,
+  `PreparedMessage::with_deflate` and `compressed_len`. Negotiation in
+  both roles with all four parameters and window bits 8 to 15; compressed
+  sends by `SendOptions` and a minimum size (256 bytes); inflation into the
+  reassembly buffer capped at `max_message` while it runs (1009), text
+  validated once inflated; no context takeover unless configured.
+- `WsError::InvalidCompressedData` (1007) for compressed data that is not
+  valid DEFLATE.
+- Autobahn TestSuite sections 12 and 13 (permessage-deflate) in CI, both
+  roles; the `deflate_message` fuzz target; `tests/deflate.rs` with the
+  RFC 7692 section 7.2.3 examples and property tests.
+- compress-lib 0.7: inflation is linear however the input is split, a
+  compressed message that ends inside a DEFLATE block (or keeps the
+  `00 00 FF FF` tail RFC 7692 removes) fails with 1007, and `wipe` zeroes
+  the compression windows.
+
+- `Sender::send_text_with` and `send_binary_with`;
+  `blocking::WebSocket::send_text_with`, `send_binary_with`, and
+  `with_keepalive`.
+
+### Changed
+
+- A connection's timers start with the 5 s close timeout armed, without
+  `with_keepalive` (the documented default, which only held once a
+  keepalive was set): a peer that never answers the Close no longer holds
+  a connection made by `accept`, `Acceptor`, or the `blocking` module.
+- The input buffer is compacted only when half of it is read or when what
+  is left cannot be parsed, not on every feed once full.
+- `detach_message` returns `None` once input was fed, whatever the buffer
+  did.
+- A client fails a response whose `Upgrade` names anything but
+  `websocket`.
+- `ServerHandshake::response_fields` borrows the `Negotiated` it is given
+  for as long as the fields live (the extension value is written there).
+  Pass the decision's extensions; a temporary `&Negotiated::none()` kept
+  past its statement must be bound first.
+- `ServerHandshake::accept` and `write_response_with` write the negotiated
+  `sec-websocket-extensions` field.
+- A single-frame text message is validated once, not twice: small-message
+  receive 14 to 24% faster than 0.8.0 on the hosted runners.
+- Every rustdoc example runs: the `blocking` module's accept and connect
+  examples talk over loopback instead of needing a server.
+- `docs/API.md` final for the 1.0 surface; `docs/STABILITY-1.0.md`, the
+  1.0 readiness note; the 0.9 security review in `docs/SECURITY.md`.
+- All eleven fuzz targets, `deflate_message` included, ran clean for 32
+  hours (`deflate_message` 25) before a host restart cut the 72-hour runs
+  short; the 72-hour runs are restarted for 1.0 (`docs/SECURITY.md`).
+- Sockets: the blocking pool on net-io ran 24 hours on Linux, both drivers
+  4 hours on Windows, flat heap (`interop/net-io/tests/soak.rs`).
+
+### Fixed
+
+- `blocking::connect_with` built the client connection without the
+  negotiated extensions.
+
+---
+
 ## [0.8.0] - 2026-11-06
 
 Alpha: ws-net end to end on real transports (net-io's two drivers, tls-net)
@@ -454,7 +523,8 @@ Initial scaffold and repository bootstrap. No domain logic yet: this release est
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jamesgober/ws-net/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamesgober/ws-net/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/ws-net/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/ws-net/compare/v0.5.0...v0.6.0

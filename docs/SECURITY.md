@@ -93,7 +93,7 @@ design.
 
 ## Fuzzing
 
-Ten cargo-fuzz targets (`fuzz/`), the corpus outside the repository:
+Eleven cargo-fuzz targets (`fuzz/`), the corpus outside the repository:
 
 | Target | Input | Oracle |
 |---|---|---|
@@ -106,6 +106,7 @@ Ten cargo-fuzz targets (`fuzz/`), the corpus outside the repository:
 | `origin_policy` | allowlist entry, Origin, Host | an identical origin is permitted; nothing but http or https is |
 | `handshake_key` | `Sec-WebSocket-Key` values | accepted exactly when canonical base64 of 16 bytes |
 | `differential_tungstenite` | client bytes | what ws-net and tungstenite 0.30.0 deliver agrees as far as both go |
+| `deflate_message` | bytes to a server that negotiated permessage-deflate, window and takeover from the input | no panic; split invariance; whole output frames; memory within the bounds |
 
 Run: `fuzz/run-all.sh 24` (WSL or Linux, nightly). The record of each run
 is below; every crash becomes a regression test before it is fixed.
@@ -129,6 +130,32 @@ review fixes. No crash, no timeout, no out-of-memory, no artifact.
 | `connection_api` | 446 million | none |
 | `connection_server` | 245 million | none |
 | `differential_tungstenite` | 245 million | none |
+
+### 0.9.0: 2026-11-06 to 2026-11-07
+
+The 72-hour runs (NFR-14), on the 0.9 code, were cut short together at
+2026-11-07T19:56Z when the shared host restarted WSL; libFuzzer reports
+the interruption, not a finding. The ten targets ran 32 hours 6 minutes,
+`deflate_message` 24 hours 50 minutes (on compress-lib 0.7), so each
+passed the 24-hour bar again. No crash, no out-of-memory, no leak. 58
+reported timeouts were WSL clock steps: each input replayed and passed.
+The 14 inputs kept as slow replay in about a second each. 14.55 billion
+inputs in all. Both runs restarted on 2026-11-08 from the corpora they
+grew, for the full 72 hours before 1.0.
+
+| Target | Inputs run | Findings |
+|---|---:|---|
+| `frame_header` | 4.91 billion | none |
+| `extension_parse` | 2.42 billion | none |
+| `handshake_key` | 2.12 billion | none |
+| `origin_policy` | 1.96 billion | none |
+| `server_head` | 1.33 billion | none |
+| `client_head` | 845 million | none |
+| `connection_api` | 265 million | none |
+| `connection_server` | 257 million | none |
+| `connection_client` | 194 million | none |
+| `differential_tungstenite` | 137 million | none |
+| `deflate_message` | 118 million | none |
 
 ## Review
 

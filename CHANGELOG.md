@@ -11,6 +11,15 @@
 
 ## [Unreleased]
 
+---
+
+## [0.9.0] - 2026-11-08
+
+Beta: permessage-deflate (RFC 7692), the 1.0 API surface final in
+`docs/API.md`, a fresh security review, and the 0.9 performance pass. The
+API is designed as it will freeze; changes from here need a reason in
+`docs/STABILITY-1.0.md`.
+
 ### Added
 
 - permessage-deflate (RFC 7692), feature `deflate`, on compress-lib (first
@@ -60,6 +69,11 @@
   examples talk over loopback instead of needing a server.
 - `docs/API.md` final for the 1.0 surface; `docs/STABILITY-1.0.md`, the
   1.0 readiness note; the 0.9 security review in `docs/SECURITY.md`.
+- All eleven fuzz targets, `deflate_message` included, ran clean for 32
+  hours (`deflate_message` 25) before a host restart cut the 72-hour runs
+  short; the 72-hour runs are restarted for 1.0 (`docs/SECURITY.md`).
+- Sockets: the blocking pool on net-io ran 24 hours on Linux, both drivers
+  4 hours on Windows, flat heap (`interop/net-io/tests/soak.rs`).
 
 ### Fixed
 
@@ -509,7 +523,8 @@ Initial scaffold and repository bootstrap. No domain logic yet: this release est
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jamesgober/ws-net/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamesgober/ws-net/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/ws-net/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/ws-net/compare/v0.5.0...v0.6.0

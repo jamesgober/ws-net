@@ -14,7 +14,7 @@ polish exit (`dev/ROADMAP.md`). 1.0 itself needs the owner's explicit go.
 | Dependencies | no third-party runtime dependency; parse-net, mod-rand, and compress-lib (optional) by published version | `deny.toml`, NFR-1 |
 | Safety | `#![forbid(unsafe_code)]`; no reachable panic on peer input; a lint wall on arithmetic and indexing | NFR-2, NFR-3 |
 | Security | a threat model with a test per threat (T-1 to T-29, the deflate threats included); two reviews before 0.7, a fresh one in 0.9, every finding fixed with a test | `docs/SECURITY.md` |
-| Fuzzing | ten targets 24 hours each before 0.7, clean | `docs/SECURITY.md` |
+| Fuzzing | ten targets 24 hours each before 0.7, clean; all eleven again in 0.9 (32 hours, `deflate_message` 25), clean, before WSL cut the 72-hour runs short | `docs/SECURITY.md`, D-071 |
 | Memory | `size_of::<Connection>()` at most 512 bytes; idle heap 0 after `release_memory`; every heap growth site names its budget | `tests/memory.rs`, `tests/budget_audit.rs` |
 | Allocation | no allocation per message in steady state; one per handshake | counting-allocator tests, NFR-4 |
 | Determinism | the same events for every split of the input | proptest, every piece size 1 to 15 |
@@ -30,7 +30,7 @@ polish exit (`dev/ROADMAP.md`). 1.0 itself needs the owner's explicit go.
 
 | Item | What closes it |
 |---|---|
-| 72-hour fuzzing per target (NFR-14) | the runs started 2026-11-06 on all eleven targets, `deflate_message` included, end clean |
+| 72-hour fuzzing per target (NFR-14) | the runs restarted 2026-11-08 on all eleven targets end clean; `deflate_message` runs its 72 hours again on compress-lib 0.9 once adopted (D-071) |
 | 24-hour socket soak on net-io's reactor (NFR-21) | a clean 24-hour Linux run on net-io 0.7.0; on 0.6.1 seven connections stopped receiving after 15 hours, a net-io reactor defect fixed for 0.7.0 (D-068) |
 | A gateway consumer | a gateway using the policy, counters, `wipe`, and close on revocation runs end to end (serve-net and the Studio already pass on 0.9 unchanged, D-069) |
 | Release candidates | two weeks of release candidates with no API change |

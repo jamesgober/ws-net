@@ -74,14 +74,14 @@ What it guarantees, and how each guarantee is checked:
 
 ```toml
 [dependencies]
-ws-net = "0.8"
+ws-net = "0.9"
 ```
 
 Without the standard library:
 
 ```toml
 [dependencies]
-ws-net = { version = "0.8", default-features = false }
+ws-net = { version = "0.9", default-features = false }
 ```
 
 With permessage-deflate (RFC 7692), from 0.9:

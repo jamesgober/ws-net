@@ -103,10 +103,10 @@ async runtime, a test harness, or memory.
 
 ```toml
 [dependencies]
-ws-net = "0.8"
+ws-net = "0.9"
 
 # no_std (alloc only)
-ws-net = { version = "0.8", default-features = false }
+ws-net = { version = "0.9", default-features = false }
 
 # permessage-deflate (RFC 7692), from 0.9
 ws-net = { version = "0.9", features = ["deflate"] }

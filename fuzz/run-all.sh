@@ -4,7 +4,8 @@
 # (under $WS_NET_FUZZ_HOME, default ~/.cache/ws-net-fuzz).
 #
 # WSL steps its wall clock back now and then, and libFuzzer then reports a
-# "timeout after 18446744073709551615 seconds" on an input that is fine.
+# "timeout after 18446744073709551615 seconds" (or ...614 for a two-second
+# step: the negative elapsed time wrapped) on an input that is fine.
 # Such a report is replayed once: if the input passes, it is discarded and
 # the target resumes for the time it has left. Any other crash stops that
 # target and is kept in its artifacts directory.
@@ -40,7 +41,7 @@ run_one() {
             -artifact_prefix="$HOME_DIR/artifacts/$t/" >> "$log" 2>&1
         status=$?
         [ "$status" -eq 0 ] && break
-        if grep -q "timeout after 18446744073709551615 seconds\|Unit for -1 seconds" "$log"; then
+        if grep -q "timeout after 1844674407370955[0-9]* seconds\|Unit for -[0-9]* seconds" "$log"; then
             for a in "$HOME_DIR/artifacts/$t"/timeout-*; do
                 [ -e "$a" ] || continue
                 if timeout 120 "$BIN/$t" "$a" >/dev/null 2>&1; then
@@ -49,7 +50,7 @@ run_one() {
                 fi
             done
             # Keep the log readable for the next stop.
-            sed -i 's/timeout after 18446744073709551615 seconds/clock step (replayed)/; s/Unit for -1 seconds/clock step unit/' "$log"
+            sed -i 's/timeout after 1844674407370955[0-9]* seconds/clock step (replayed)/; s/Unit for -[0-9]* seconds/clock step unit/' "$log"
             continue
         fi
         echo "STOPPED with status $status" >> "$log"

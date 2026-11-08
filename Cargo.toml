@@ -73,7 +73,7 @@ mod-rand = { version = "1", default-features = false, features = ["tier3"], opti
 # First party, no dependencies: raw DEFLATE with sync flush, context
 # takeover, and window bits 8 to 15, feature `deflate` only. Default
 # features off: no_std with alloc.
-compress-lib = { version = "0.7", default-features = false, optional = true }
+compress-lib = { version = "0.9.0", default-features = false, optional = true }
 # SHA-1 and base64 for the handshake stay small private modules: crypt-io
 # ships no SHA-1 by design and the owner's codec library has no base64
 # (dev/ROADMAP.md, dependency wiring).

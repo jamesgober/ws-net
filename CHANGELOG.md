@@ -16,6 +16,8 @@
 - `interop/net-io` on net-io 0.7.0 (its reactor fix for a reader that lost
   its place on the starved list, and the output-buffer reuse); no source
   change. The 24-hour reactor soak runs on it.
+- `interop/net-io` on net-io 0.7.1 (an idle TLS connection on the reactor
+  gives back its buffers, as a plaintext one does); no source change.
 - compress-lib 0.9.0 for feature `deflate` (its `message` API unchanged
   since 0.7 and frozen for its 1.0); no source change.
 

@@ -11,7 +11,7 @@ polish exit (`dev/ROADMAP.md`). 1.0 itself needs the owner's explicit go.
 |---|---|---|
 | Protocol | every RFC 6455 receive rule with its close code, both roles; permessage-deflate (RFC 7692, feature `deflate`) with all four parameters | `docs/API.md` |
 | Conformance | Autobahn TestSuite sections 1 to 13, 517 cases, both roles, strict (OK or INFORMATIONAL only), in CI on every push | `autobahn/` |
-| Dependencies | no third-party runtime dependency; parse-net, mod-rand, and compress-lib 0.9 (optional) by published version | `deny.toml`, NFR-1 |
+| Dependencies | no third-party runtime dependency; parse-net, mod-rand, and compress-lib 1 (optional) by published version | `deny.toml`, NFR-1 |
 | Safety | `#![forbid(unsafe_code)]`; no reachable panic on peer input; a lint wall on arithmetic and indexing | NFR-2, NFR-3 |
 | Security | a threat model with a test per threat (T-1 to T-29, the deflate threats included); two reviews before 0.7, a fresh one in 0.9, every finding fixed with a test | `docs/SECURITY.md` |
 | Fuzzing | ten targets 24 hours each before 0.7, clean; all eleven again in 0.9 (32 hours, `deflate_message` 25), clean, before WSL cut the 72-hour runs short | `docs/SECURITY.md`, D-071 |
@@ -19,7 +19,7 @@ polish exit (`dev/ROADMAP.md`). 1.0 itself needs the owner's explicit go.
 | Allocation | no allocation per message in steady state; one per handshake | counting-allocator tests, NFR-4 |
 | Determinism | the same events for every split of the input | proptest, every piece size 1 to 15 |
 | Soak, in memory | 100,000 connection pairs for 4 hours | `tests/soak.rs` |
-| Soak, sockets | on net-io, 500 clients: Linux 4 hours per driver (0.8), the blocking pool 24 hours (0.9); Windows 4 hours per driver (0.9) | `interop/net-io/tests/soak.rs`, D-068 |
+| Soak, sockets | on net-io, 500 clients: Linux 4 hours per driver (0.8), both drivers 24 hours (the blocking pool in 0.9, the reactor on net-io 0.7.0 in 0.9.x, 3.70 billion messages, heap flat); Windows 4 hours per driver (0.9) | `interop/net-io/tests/soak.rs`, D-068, D-077 |
 | Platforms | Linux, macOS, Windows on stable and 1.85; `no_std`; 32-bit; big-endian under Miri | CI |
 | Integration | http-net (sans-IO and blocking hand-off), net-io (both drivers), tls-net, end to end in CI | `docs/INTEGRATION.md` |
 | Consumers | serve-net's upgrade route and LexerSketch Studio build and pass on the 0.9 API unchanged | D-069 |
@@ -30,8 +30,7 @@ polish exit (`dev/ROADMAP.md`). 1.0 itself needs the owner's explicit go.
 
 | Item | What closes it |
 |---|---|
-| 72-hour fuzzing per target (NFR-14) | the runs restarted 2026-11-08 on all eleven targets end clean; `deflate_message`, the one target that reaches compress-lib, runs its 72 hours on compress-lib 0.9.0 (D-071, D-073) |
-| 24-hour socket soak on net-io's reactor (NFR-21) | a clean 24-hour Linux run on net-io 0.7.0; on 0.6.1 seven connections stopped receiving after 15 hours, a net-io reactor defect fixed for 0.7.0 (D-068) |
+| 72-hour fuzzing per target (NFR-14) | the runs restarted 2026-11-08 on all eleven targets end clean; `deflate_message`, the one target that reaches compress-lib, runs its 72 hours on compress-lib 1.0.0 (D-071, D-076, D-078) |
 | A gateway consumer | a gateway using the policy, counters, `wipe`, and close on revocation runs end to end (serve-net and the Studio already pass on 0.9 unchanged, D-069) |
 | Release candidates | two weeks of release candidates with no API change |
 | Freeze | after the Studio ships on ws-net (D18) |

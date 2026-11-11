@@ -13,6 +13,18 @@
 
 ### Changed
 
+- **Breaking:** `ClientHandshake::verify` returns a `Verified` (the
+  selected subprotocol and the negotiated extensions) instead of the
+  subprotocol alone, and `ClientHandshake::verify_head` returns
+  `(Verified, usize)`. `verify_full` is removed: `verify` is what it was.
+  The old forms dropped the negotiated extensions, so a client that
+  offered permessage-deflate could not build its connection from them.
+  Migration: `verify(..)?` becomes `verify(..)?.protocol`;
+  `verify_full(..)` becomes `verify(..)`; from `verify_head`, the protocol
+  is `.0.protocol` (`docs/API.md`, "Migrating from 0.9").
+- `docs/API.md`: a "Tier 1 at a glance" table (accept, connect, receive,
+  send, close, sans-IO and blocking) with a socket example; the README's
+  quick start adds the blocking client and server.
 - `interop/net-io` on net-io 0.7.0 (its reactor fix for a reader that lost
   its place on the starved list, and the output-buffer reuse); no source
   change. The 24-hour reactor soak runs on it.

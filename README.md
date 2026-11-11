@@ -74,21 +74,21 @@ What it guarantees, and how each guarantee is checked:
 
 ```toml
 [dependencies]
-ws-net = "0.9"
+ws-net = "0.10"
 ```
 
 Without the standard library:
 
 ```toml
 [dependencies]
-ws-net = { version = "0.9", default-features = false }
+ws-net = { version = "0.10", default-features = false }
 ```
 
 With permessage-deflate (RFC 7692), from 0.9:
 
 ```toml
 [dependencies]
-ws-net = { version = "0.9", features = ["deflate"] }
+ws-net = { version = "0.10", features = ["deflate"] }
 ```
 
 <hr>
@@ -120,6 +120,28 @@ let text = match conn.poll()? {
 };
 conn.send_text(&text)?;
 assert_eq!(conn.output(), [0x81, 0x05, b'H', b'e', b'l', b'l', b'o']);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Over a `std` socket (or any `Read + Write` stream), the `blocking` module
+does the reads and writes:
+
+```rust
+use std::{net::{TcpListener, TcpStream}, thread};
+use ws_net::{Message, blocking};
+
+let listener = TcpListener::bind("127.0.0.1:0")?;
+let addr = listener.local_addr()?;
+let server = thread::spawn(move || -> Result<(), blocking::Error> {
+    let mut ws = blocking::accept(listener.accept()?.0)?; // same-origin policy, 101 written
+    let message = ws.read()?;
+    ws.send(&message) // echo
+});
+
+let mut ws = blocking::connect(TcpStream::connect(addr)?, &addr.to_string(), "/")?;
+ws.send_text("hello")?;
+assert_eq!(ws.read()?, Message::Text("hello".into()));
+server.join().expect("server thread")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 

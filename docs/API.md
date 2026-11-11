@@ -1,10 +1,13 @@
 # ws-net - API Reference
 
 > Complete reference for every public item in `ws-net`, with examples.
-> **Status: beta (0.9.0), design locked.** Every item of the 1.0 surface
-> is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
-> landed in, and every one is shipped and documented below. The surface is
-> frozen at `1.0.0`, after LexerSketch Studio ships on it. See
+> **Status: beta (0.10.0).** Every item of the 1.0 surface is listed in
+> [The 1.0 API](#the-10-api-design-lock) with the version it landed in,
+> and every one is shipped and documented below. 0.10 simplified the
+> client's response check: `ClientHandshake::verify` and `verify_head`
+> return a `Verified`, and `verify_full` is gone (see
+> [Migrating from 0.9](#migrating-from-09)). The surface is frozen at
+> `1.0.0`, after LexerSketch Studio ships on it. See
 > [`../dev/ROADMAP.md`](../dev/ROADMAP.md) and [`../dev/PLAN.md`](../dev/PLAN.md).
 
 <sub>Copyright &copy; 2026 <strong>James Gober</strong>.</sub>
@@ -14,6 +17,7 @@
 - [Overview](#overview)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Tier 1 at a glance](#tier-1-at-a-glance)
 - [Tier 1: `accept` and `Acceptor`](#tier-1-accept-and-acceptor)
 - [Concepts](#concepts)
   - [The I/O loop](#the-io-loop)
@@ -63,6 +67,7 @@
 - [Feature flags](#feature-flags)
 - [Limits reference](#limits-reference)
 - [The 1.0 API (design lock)](#the-10-api-design-lock)
+- [Migrating from 0.9](#migrating-from-09)
 
 ## Overview
 
@@ -103,13 +108,13 @@ async runtime, a test harness, or memory.
 
 ```toml
 [dependencies]
-ws-net = "0.9"
+ws-net = "0.10"
 
 # no_std (alloc only)
-ws-net = { version = "0.9", default-features = false }
+ws-net = { version = "0.10", default-features = false }
 
 # permessage-deflate (RFC 7692), from 0.9
-ws-net = { version = "0.9", features = ["deflate"] }
+ws-net = { version = "0.10", features = ["deflate"] }
 ```
 
 ## Quick start
@@ -135,6 +140,42 @@ let reply = match conn.poll()? {
 };
 conn.send_text(&reply)?;
 assert_eq!(conn.output(), [0x81, 0x05, b'H', b'E', b'L', b'L', b'O']);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+## Tier 1 at a glance
+
+One line each, no configuration: the defaults are the same-origin policy,
+the [limits](#limits-reference) below, and a 5 s close timeout.
+
+| To | Sans-IO | Over a `Read + Write` stream (feature `std`) |
+|---|---|---|
+| Accept an upgrade | `let accepted = ws_net::accept(&bytes)?;` (`Ok(None)` until the head is complete) | `let mut ws = blocking::accept(stream)?;` |
+| Connect | `ClientHandshake::new().write_request(host, path, &mut out)?`, then `verify_head(&response)?` | `let mut ws = blocking::connect(stream, host, path)?;` |
+| Receive a message | `conn.poll()?` (an [`Event`](#event)) | `ws.read()?` (a [`Message`](#message-and-messagekind)) |
+| Send a message | `conn.send_text("hi")?`, `conn.send_binary(&data)?` | `ws.send_text("hi")?`, `ws.send_binary(&data)?` |
+| Close | `conn.close(CloseCode::NORMAL, "")?` | `ws.close(CloseCode::NORMAL, "")?` |
+
+Sans-IO, the bytes to write are in `conn.output()`; mark them written
+with `advance_output`. Over a stream, every call writes before it
+returns.
+
+```rust
+use std::{net::{TcpListener, TcpStream}, thread};
+use ws_net::{Message, blocking};
+
+let listener = TcpListener::bind("127.0.0.1:0")?;
+let addr = listener.local_addr()?;
+let server = thread::spawn(move || -> Result<(), blocking::Error> {
+    let mut ws = blocking::accept(listener.accept()?.0)?;
+    let message = ws.read()?;
+    ws.send(&message) // echo
+});
+
+let mut ws = blocking::connect(TcpStream::connect(addr)?, &addr.to_string(), "/")?;
+ws.send_text("hello")?;
+assert_eq!(ws.read()?, Message::Text("hello".into()));
+server.join().expect("server thread")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -1238,17 +1279,19 @@ The client side: the request to send, and the check of the response.
 | `with_protocols(self, protocols: &[&str]) -> ClientHandshake` | Offers subprotocols, in preference order. |
 | `with_origin(self, origin: &str) -> ClientHandshake` | Sends an `Origin` field, as browsers do. |
 | `with_header(self, name: &str, value: &[u8]) -> ClientHandshake` | An extra request header (`Authorization`, `Cookie`), validated at write; reserved names refused. |
-| `verify_full(&self, status, headers) -> Result<Verified<'_>, HandshakeError>` | As `verify`, returning the protocol and the negotiated extensions. |
 | `connection(&self, verified: &Verified<'_>) -> Connection` (feature `std`), `connection_with_seed(&self, verified, seed: [u8; 32]) -> Connection` | The client connection for a verified response, with its extensions. `Verified::none()` builds one by hand. |
 | `key(&self) -> &str` | The `Sec-WebSocket-Key` sent. |
 | `write_request(&self, host: &str, path: &str, out: &mut Vec<u8>) -> Result<(), HandshakeError>` | Appends the request. `InvalidRequest` for an empty or non-visible-ASCII host, path, or origin, or a path without a leading `/`; `InvalidProtocol` for a non-token protocol. Nothing is written on error. |
-| `verify(&self, status: u16, headers: impl IntoIterator<Item = (&str, &[u8])>) -> Result<Option<&str>, HandshakeError>` | Checks a response an HTTP layer parsed; returns the selected subprotocol. |
-| `verify_head(&self, bytes: &[u8]) -> Result<Option<(Option<&str>, usize)>, HandshakeError>` | Checks a response from raw bytes: `Ok(None)` until the head is complete, then the selected subprotocol and the head's length. |
+| `verify(&self, status: u16, headers: impl IntoIterator<Item = (&str, &[u8])>) -> Result<Verified<'_>, HandshakeError>` | Checks a response an HTTP layer parsed; returns what was verified: the selected subprotocol and the negotiated extensions. |
+| `verify_head(&self, bytes: &[u8]) -> Result<Option<(Verified<'_>, usize)>, HandshakeError>` | Checks a response from raw bytes: `Ok(None)` until the head is complete, then what was verified and the head's length. |
+| `Verified { protocol: Option<&str>, extensions: Negotiated }` | `#[non_exhaustive]`. Pass it to `connection`. |
 
 **What is checked.** Status 101 (else `NotSwitching(status)`); `Upgrade`
 lists `websocket`; `Connection` lists `upgrade`; exactly one
 `Sec-WebSocket-Accept`, equal to the expected value (`AcceptMismatch`); no
-extension accepted (`UnexpectedExtension`); at most one
+extension accepted that was not offered (`UnexpectedExtension`), an
+accepted permessage-deflate within RFC 7692 section 7
+(`InvalidExtensions`); at most one
 `Sec-WebSocket-Protocol`, naming an offered protocol (`InvalidProtocol`).
 `verify_head` reads the head as strictly as `ServerHandshake::from_head`
 (status line `HTTP/1.1 SP 3DIGIT [SP reason]`).
@@ -1264,7 +1307,10 @@ client.write_request("server.example.com", "/chat", &mut request)?;
 let (server, _) = ServerHandshake::from_head(&request)?.expect("complete");
 let mut response = Vec::new();
 server.write_response(Some("chat"), &mut response)?;
-assert_eq!(client.verify_head(&response)?, Some((Some("chat"), response.len())));
+let (verified, len) = client.verify_head(&response)?.expect("complete");
+assert_eq!((verified.protocol, len), (Some("chat"), response.len()));
+let conn = client.connection(&verified); // with the negotiated extensions
+assert_eq!(conn.role(), ws_net::Role::Client);
 
 assert_eq!(
     client.verify_head(b"HTTP/1.1 403 Forbidden\r\n\r\n"),
@@ -1408,7 +1454,7 @@ pub struct DeflateParams {
 | `with_level(u8)`, `with_min_size(usize)` | 1, 256 | Compression level 0 to 9; messages shorter than `min_size` go uncompressed. |
 | `server_context_takeover`, `client_context_takeover`, `server_max_window_bits`, `client_max_window_bits`, `level`, `min_size` | | The configured values. |
 | `AcceptPolicy::with_deflate(DeflateConfig)` | | The server accepts the first offer, in the client's order, that the configuration can satisfy; offers with unknown, repeated, or invalid parameters are declined. A configuration asking for a client window under 15 bits declines a client that did not offer `client_max_window_bits` (the response may not limit it). |
-| `ClientHandshake::with_deflate(DeflateConfig)` | | The client offers one element: `server_no_context_takeover` unless server takeover is allowed, `client_no_context_takeover` unless its own is, `server_max_window_bits` below 15, and `client_max_window_bits`. A response that breaks RFC 7692 section 7 is `HandshakeError::InvalidExtensions`. Read it with `verify_full`, `HeadReader::client`, or the `blocking` module, which return the agreement for `connection`. |
+| `ClientHandshake::with_deflate(DeflateConfig)` | | The client offers one element: `server_no_context_takeover` unless server takeover is allowed, `client_no_context_takeover` unless its own is, `server_max_window_bits` below 15, and `client_max_window_bits`. A response that breaks RFC 7692 section 7 is `HandshakeError::InvalidExtensions`. `verify`, `verify_head`, `HeadReader::client`, and the `blocking` module return the agreement for `connection`. |
 | `Negotiated::deflate(&self) -> Option<&DeflateParams>` | | The agreement. |
 | `PreparedMessage::with_deflate(self, &DeflateConfig)` | | A broadcast compressed once (see [`PreparedMessage`](#preparedmessage)). |
 
@@ -1701,7 +1747,8 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | `AcceptPolicy::with_deflate` (feature `deflate`) | 0.9 |
 | `ClientHandshake`: `new`, `with_nonce`, `with_protocols`, `with_origin`, `key`, `write_request`, `verify`, `verify_head` | 0.2 |
 | `ClientHandshake::try_new` | 0.3 |
-| `ClientHandshake::with_header`, `verify_full` | 0.4 |
+| `ClientHandshake::with_header` | 0.4 |
+| `ClientHandshake::verify` and `verify_head` return `Verified` (`verify_full`, 0.4, folded into `verify`) | 0.10 |
 | `ClientHandshake::connection`, `connection_with_seed`; `Verified::none`; `Connection::with_extensions`, `negotiated` | 0.5 |
 | `ClientHandshake::with_deflate` (feature `deflate`) | 0.9 |
 | `HandshakeError` 0.2 variants, `status`, `write_response`; `UnexpectedBody`, `OriginRefused`, `ProtocolRequired`, `RandomUnavailable` | 0.2, 0.3 |
@@ -1719,3 +1766,29 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | permessage-deflate (feature `deflate`): `DeflateConfig`, `DeflateParams`, `PreparedMessage::with_deflate`, `compressed_len`, `Negotiated::deflate` | 0.9 (back from 1.1 once compress-lib was published; `dev/PLAN.md` D-056) |
 | `VERSION` | 0.3 |
 | After 1.0: shared-segment output, a public extension trait, RFC 8441 (`ExtendedConnect`), connection state export | 1.x |
+
+## Migrating from 0.9
+
+One change, on the client: the response check returns everything it
+verified, so the negotiated extensions can no longer be dropped on the way
+to the connection.
+
+| 0.9 | 0.10 |
+|---|---|
+| `client.verify(status, headers)? -> Option<&str>` | `client.verify(status, headers)?.protocol` |
+| `client.verify_full(status, headers)?` | `client.verify(status, headers)?` |
+| `client.verify_head(bytes)? -> Option<(Option<&str>, usize)>` | `client.verify_head(bytes)? -> Option<(Verified, usize)>`; the protocol is `.0.protocol` |
+
+```rust
+use ws_net::ClientHandshake;
+
+let client = ClientHandshake::with_nonce(*b"the sample nonce");
+let response = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
+    Connection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
+// 0.9: let (protocol, len) = client.verify_head(response)?.expect("complete");
+let (verified, len) = client.verify_head(response)?.expect("complete");
+assert_eq!((verified.protocol, len), (None, response.len()));
+let conn = client.connection(&verified);
+# let _ = conn;
+# Ok::<(), ws_net::HandshakeError>(())
+```

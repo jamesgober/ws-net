@@ -199,7 +199,7 @@ message from the peer fails the connection with 1002.
 - **Server, blocking http-net.** The decision is made in the request
   handler and the socket arrives in `on_upgrade`: carry `decision.extensions`
   (a `Copy` value) from one to the other and build the connection with it.
-- **Client.** `verify_full`, `HeadReader::client`, and
+- **Client.** `verify`, `verify_head`, `HeadReader::client`, and
   `blocking::connect_with` return the agreement; `connection` uses it.
 
 What it costs and what to set:

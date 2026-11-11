@@ -30,7 +30,7 @@ polish exit (`dev/ROADMAP.md`). 1.0 itself needs the owner's explicit go.
 
 | Item | What closes it |
 |---|---|
-| 72-hour fuzzing per target (NFR-14) | the runs restarted 2026-11-08 on all eleven targets end clean; `deflate_message`, the one target that reaches compress-lib, runs its 72 hours on compress-lib 1.0.0 (D-071, D-076, D-078) |
+| 72-hour fuzzing per target (NFR-14) | the runs on the 0.10.0 code end clean on all eleven targets, `deflate_message` on compress-lib 1.0.0; the runs before them reached 38 to 64 hours clean before WSL restarts cut them (D-071, D-076, D-078, D-079) |
 | A gateway consumer | a gateway using the policy, counters, `wipe`, and close on revocation runs end to end (serve-net and the Studio already pass on 0.9 unchanged, D-069) |
 | Release candidates | two weeks of release candidates with no API change |
 | Freeze | after the Studio ships on ws-net (D18) |

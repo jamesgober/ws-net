@@ -268,7 +268,7 @@ fn verify(config: DeflateConfig, value: &[u8]) -> Result<Negotiated, HandshakeEr
         ("Sec-WebSocket-Accept", b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
         ("Sec-WebSocket-Extensions", value),
     ];
-    hs.verify_full(101, fields).map(|v| v.extensions)
+    hs.verify(101, fields).map(|v| v.extensions)
 }
 
 #[test]
@@ -323,7 +323,7 @@ fn test_client_verify_response_rules() {
         ("Sec-WebSocket-Extensions", b"permessage-deflate"),
     ];
     assert_eq!(
-        plain.verify_full(101, fields),
+        plain.verify(101, fields),
         Err(HandshakeError::UnexpectedExtension)
     );
 }

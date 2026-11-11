@@ -505,7 +505,10 @@ fn test_client_upgrade_must_be_websocket_alone() {
             ("Sec-WebSocket-Accept", b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
         ]
     };
-    assert_eq!(client.verify(101, fields(b"WebSocket")), Ok(None));
+    assert_eq!(
+        client.verify(101, fields(b"WebSocket")).map(|v| v.protocol),
+        Ok(None)
+    );
     assert_eq!(
         client.verify(101, fields(b"websocket, h2c")),
         Err(HandshakeError::MissingUpgrade)

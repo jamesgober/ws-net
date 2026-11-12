@@ -63,7 +63,7 @@ impl Add<Duration> for Millis {
 /// | [`ping_interval`](Self::with_ping_interval) | off | no frame arrived for this long: queue a Ping carrying the time |
 /// | [`idle_timeout`](Self::with_idle_timeout) | off | no byte arrived for this long: fail with [`IdleTimeout`](crate::WsError::IdleTimeout), Close 1001 queued |
 /// | [`close_timeout`](Self::with_close_timeout) | 5 s | this end sent Close and the peer did not answer: fail with [`CloseTimeout`](crate::WsError::CloseTimeout), nothing more sent |
-/// | [`message_timeout`](Self::with_message_timeout) | off | a data message stayed incomplete this long: fail with [`MessageTimeout`](crate::WsError::MessageTimeout), Close 1008 queued |
+/// | [`message_timeout`](Self::with_message_timeout) | 60 s | a data message stayed incomplete this long: fail with [`MessageTimeout`](crate::WsError::MessageTimeout), Close 1008 queued |
 ///
 /// Times are measured between calls to
 /// [`on_time`](crate::Connection::on_time), so precision is the spacing of
@@ -81,6 +81,7 @@ impl Add<Duration> for Millis {
 ///     .with_ping_interval(Duration::from_secs(30))
 ///     .with_idle_timeout(Duration::from_secs(75));
 /// assert_eq!(k.close_timeout(), Some(Duration::from_secs(5)));
+/// assert_eq!(k.message_timeout(), Some(Duration::from_secs(60)));
 /// ```
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -98,13 +99,20 @@ impl Default for Keepalive {
 }
 
 impl Keepalive {
-    /// Pings and idle and message timeouts off; close timeout 5 s.
+    /// Pings and the idle timeout off; close timeout 5 s; message timeout
+    /// 60 s, so a peer that starts a message and stops sending does not
+    /// hold the connection's reassembly buffer for as long as the TCP
+    /// connection lives.
     ///
     /// # Examples
     ///
     /// ```
+    /// use core::time::Duration;
+    ///
     /// let k = ws_net::Keepalive::new();
-    /// assert_eq!((k.ping_interval(), k.idle_timeout(), k.message_timeout()), (None, None, None));
+    /// assert_eq!((k.ping_interval(), k.idle_timeout()), (None, None));
+    /// assert_eq!(k.close_timeout(), Some(Duration::from_secs(5)));
+    /// assert_eq!(k.message_timeout(), Some(Duration::from_secs(60)));
     /// ```
     #[must_use]
     pub const fn new() -> Self {
@@ -112,7 +120,7 @@ impl Keepalive {
             ping: None,
             idle: None,
             close: Some(Duration::from_secs(5)),
-            message: None,
+            message: Some(Duration::from_secs(60)),
         }
     }
 
@@ -157,7 +165,10 @@ impl Keepalive {
     }
 
     /// Fail a data message that stays incomplete longer than `timeout`
-    /// (a slow-message attack holds the message budget otherwise).
+    /// (a slow-message attack holds the message budget otherwise). The
+    /// default 60 s takes a full default 16 MiB message at 2.3 Mbit/s or
+    /// faster; raise it for larger or slower messages, or pass
+    /// [`Duration::MAX`] to never time a message out.
     ///
     /// # Examples
     ///
@@ -259,15 +270,16 @@ pub(crate) struct Clock {
 }
 
 /// A connection's timers start as [`Keepalive::new`]'s: no Ping, no idle
-/// or message timeout, and the 5 s close timeout, so a connection whose
-/// peer never answers its Close is released without any configuration.
+/// timeout, the 5 s close timeout and the 60 s message timeout, so a
+/// connection whose peer never answers its Close, or never finishes a
+/// message, is released without any configuration.
 impl Default for Clock {
     fn default() -> Self {
         Self {
             ping: UNSET,
             idle: UNSET,
             close: ms(Keepalive::new().close),
-            message: UNSET,
+            message: ms(Keepalive::new().message),
             armed: true,
             last_rx: UNSET,
             ping_sent: UNSET,

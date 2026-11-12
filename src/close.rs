@@ -155,7 +155,7 @@ impl From<CloseCode> for u16 {
 /// use ws_net::{CloseCode, Connection, Event};
 ///
 /// let mut client = Connection::client_with_seed([7; 32]);
-/// let _ = client.feed(&[0x88, 0x05, 0x03, 0xE8, b'b', b'y', b'e']);
+/// assert_eq!(client.feed(&[0x88, 0x05, 0x03, 0xE8, b'b', b'y', b'e']), 7);
 /// match client.poll().unwrap() {
 ///     Event::Close(Some(frame)) => {
 ///         assert_eq!(frame.code, CloseCode::NORMAL);

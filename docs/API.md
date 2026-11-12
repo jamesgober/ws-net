@@ -321,9 +321,14 @@ what this end sends is bounded too:
   against [`Limits::max_message`](#limits) before each fragment is read.
   Either violation fails with 1009. A message's buffer never grows past the
   message budget.
-- Reassembly reserves at most 1 MiB ahead of the bytes that have arrived,
-  even with the budgets lifted to `u64::MAX`: a length in a header is a
-  claim, not an allocation.
+- Reassembly grows only as payload bytes arrive (to at most four times
+  what arrived, never past a final frame's end), even with the budgets lifted to `u64::MAX`: a length
+  in a header is a claim, not an allocation. A message that stops arriving
+  fails after the [message timeout](#keepalive-millis-tick) (60 s by
+  default).
+- A buffer that held message bytes is zeroed before it is freed or regrown
+  (it moves to a new allocation rather than reallocating in place), so
+  [`wipe`](#memory-and-observability) leaves no earlier copy behind.
 - A send that would take the pending output over
   [`Limits::max_output`](#limits) (32 MiB by default) is refused with
   `OutputFull` and changes nothing. Automatic Pongs and Close frames may use
@@ -337,8 +342,9 @@ what this end sends is bounded too:
   frees every empty buffer, so an idle connection holds no heap.
 
 Peak memory of a busy connection: the input buffer, plus the message being
-reassembled (at most `max_message` plus 1 MiB reserved ahead), plus the
-output (at most twice `max_output` + 262 by vector growth, plus 64 KiB of
+reassembled (at most `max_message`, and half of it more while the buffer
+regrows, until the old one is copied and zeroed), plus the output (at most
+`max_output` + 262, half of it more while it regrows, plus 64 KiB of
 written prefix before compaction). An idle connection after
 `release_memory`: `size_of::<Connection>()`, at most 512 bytes.
 `tests/memory.rs` checks each bound with a counting allocator.
@@ -420,7 +426,7 @@ Enforced on every received frame, each with its close code:
 | A length not in its shortest encoding, or a 64-bit length with the high bit set. | `InvalidLength` | 1002 |
 | A continuation with no message in progress. | `UnexpectedContinuation` | 1002 |
 | A new data frame inside a fragmented message. | `ExpectedContinuation` | 1002 |
-| Text (or a close reason) that is not UTF-8, detected at the first bad byte, across fragment boundaries. | `InvalidUtf8` | 1007 |
+| Text (or a close reason) that is not UTF-8, detected at the first bad byte, across fragment boundaries (compressed text at the next KiB of compressed input or frame end). | `InvalidUtf8` | 1007 |
 | A frame over the frame budget, or a message over the message budget. | `FrameTooLarge`, `MessageTooLarge` | 1009 |
 | A Close payload of one byte. | `InvalidClosePayload` | 1002 |
 | A Close code that may not be sent (1005, 1006, 1015, unassigned). | `InvalidCloseCode` | 1002 |
@@ -502,7 +508,7 @@ use ws_net::{Connection, WsError};
 
 let mut conn = Connection::server();
 // A masked text frame whose payload is the invalid byte 0xFF.
-let _ = conn.feed(&[0x81, 0x81, 0, 0, 0, 0, 0xFF]);
+assert_eq!(conn.feed(&[0x81, 0x81, 0, 0, 0, 0, 0xFF]), 7);
 assert_eq!(conn.poll().unwrap_err(), WsError::InvalidUtf8);
 assert_eq!(conn.output(), [0x88, 0x02, 0x03, 0xEF]); // Close 1007
 assert!(matches!(conn.poll().unwrap(), ws_net::Event::Closed));
@@ -639,7 +645,7 @@ assert_eq!(conn.next_deadline(), None);
 | `release_memory(&mut self)` | Frees every buffer that holds no pending bytes. |
 | `memory_in_use(&self) -> usize` | Heap bytes held (capacities). |
 | `stats(&self) -> Stats` | The [counters](#stats). |
-| `wipe(&mut self)` | Zeroes input, reassembly, and output buffers and the masking seed (through `black_box`: best effort, not a guarantee, as no `unsafe` is used), then fails the connection. |
+| `wipe(&mut self)` | Zeroes input, reassembly, and output buffers and the masking seed (through `black_box`: best effort, not a guarantee, as no `unsafe` is used), then fails the connection. Buffers freed or regrown earlier were zeroed first. |
 
 ```rust
 use ws_net::{Connection, Limits, WsError};
@@ -672,7 +678,7 @@ assert_eq!(conn.stats().bytes_out, 1004);
 use ws_net::{Connection, Event, MessageKind};
 
 let mut conn = Connection::server();
-let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']); // masked "hi"
+assert_eq!(conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']), 8); // masked "hi"
 let (event, mut sender) = conn.poll_split()?;
 if let Event::Text(text) = event {
     sender.send_text(text)?; // echo without copying the message
@@ -714,7 +720,7 @@ The event borrows the connection: copy out what you need before calling a
 ```rust
 use ws_net::{Connection, Event};
 let mut conn = Connection::server();
-let _ = conn.feed(&[0x88, 0x80, 0, 0, 0, 0]); // a masked, empty Close
+assert_eq!(conn.feed(&[0x88, 0x80, 0, 0, 0, 0]), 6); // a masked, empty Close
 assert!(matches!(conn.poll().unwrap(), Event::Close(None)));
 assert_eq!(conn.output(), [0x88, 0x00]); // the echo
 ```
@@ -739,7 +745,7 @@ Owned messages for the convenience APIs and the blocking adapter.
 use ws_net::{Connection, Message};
 
 let mut conn = Connection::server();
-let _ = conn.feed(&[0x82, 0x81, 0, 0, 0, 0, 7]);
+assert_eq!(conn.feed(&[0x82, 0x81, 0, 0, 0, 0, 7]), 7);
 let message = conn.poll()?.to_message().expect("a message");
 assert_eq!(message, Message::from(vec![7]));
 conn.send(&message)?;
@@ -809,7 +815,7 @@ pub enum Tick { Nothing, PingQueued }
 | `with_ping_interval(self, Duration)` | off | Queue a Ping when no frame arrived for this long. |
 | `with_idle_timeout(self, Duration)` | off | Fail with `IdleTimeout` when no byte arrived for this long. |
 | `with_close_timeout(self, Duration)` | 5 s | Fail with `CloseTimeout` when the peer does not answer our Close. |
-| `with_message_timeout(self, Duration)` | off | Fail with `MessageTimeout` when a data message stays incomplete. |
+| `with_message_timeout(self, Duration)` | 60 s | Fail with `MessageTimeout` when a data message stays incomplete (`Duration::MAX`: never). |
 | `ping_interval`, `idle_timeout`, `close_timeout`, `message_timeout` | | Accessors (`Option<Duration>`). |
 
 ```rust
@@ -844,7 +850,7 @@ rates, since a browser sends one frame per message and few Pings.
 
 ```rust
 let mut conn = ws_net::Connection::server();
-let _ = conn.feed(&[0x89, 0x80, 0, 0, 0, 0]); // masked empty Ping
+assert_eq!(conn.feed(&[0x89, 0x80, 0, 0, 0, 0]), 6); // masked empty Ping
 let _ = conn.poll();
 assert_eq!((conn.stats().frames_in, conn.stats().pings_in), (1, 1));
 ```
@@ -882,7 +888,7 @@ let limits = Limits::new().with_max_frame(1).with_max_message(4096);
 assert_eq!(limits.max_frame(), 125); // clamped
 let mut conn = Connection::server().with_limits(limits);
 // A masked binary frame announcing 200 bytes: refused from the header.
-let _ = conn.feed(&[0x82, 0xFE, 0x00, 0xC8, 1, 2, 3, 4]);
+assert_eq!(conn.feed(&[0x82, 0xFE, 0x00, 0xC8, 1, 2, 3, 4]), 8);
 assert_eq!(conn.poll().unwrap_err(), WsError::FrameTooLarge);
 
 // Accept 1 MiB frames, send 16 KiB ones.
@@ -972,7 +978,7 @@ A received Close frame's code and reason, in [`Event::Close`](#event).
 ```rust
 use ws_net::{CloseCode, Connection, Event};
 let mut client = Connection::client_with_seed([7; 32]);
-let _ = client.feed(&[0x88, 0x05, 0x03, 0xE8, b'b', b'y', b'e']);
+assert_eq!(client.feed(&[0x88, 0x05, 0x03, 0xE8, b'b', b'y', b'e']), 7);
 match client.poll().unwrap() {
     Event::Close(Some(frame)) => assert_eq!((frame.code, frame.reason), (CloseCode::NORMAL, "bye")),
     other => panic!("{other:?}"),
@@ -1506,7 +1512,7 @@ let update = r#"{"jsonrpc":"2.0","method":"tick","params":[1,2,3]}"#.repeat(10);
 server.send_text(&update)?;
 assert_eq!(server.output()[0], 0xC1); // FIN, RSV1, text
 let wire = server.output().to_vec();
-let _ = conn.feed(&wire);
+assert_eq!(conn.feed(&wire), wire.len());
 assert!(matches!(conn.poll()?, ws_net::Event::Text(t) if t == update));
 # }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -1701,7 +1707,7 @@ allocator, no dependencies of its own), `mod-rand` (feature `std`), and
 | Capacity kept per buffer | 64 KiB default | [`Limits`](#limits) |
 | Close timeout | 5 s default | [`Keepalive`](#keepalive-millis-tick) |
 | Extension offers, parameters per offer | 16, 16 | [`extension`](#the-extension-module) |
-| Reassembly reserved ahead of arrived bytes | 1 MiB | [Budgets and memory](#budgets-and-memory) |
+| Reassembly reserved ahead of arrived bytes | none: it grows as bytes arrive | [Budgets and memory](#budgets-and-memory) |
 | Handshake head | 16 KiB | [`ServerHandshake::MAX_HEAD`](#serverhandshake) |
 | Offered subprotocols | 64 | [`ServerHandshake`](#serverhandshake) |
 
@@ -1769,9 +1775,9 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 
 ## Migrating from 0.9
 
-One change, on the client: the response check returns everything it
-verified, so the negotiated extensions can no longer be dropped on the way
-to the connection.
+One change to the API, on the client: the response check returns
+everything it verified, so the negotiated extensions can no longer be
+dropped on the way to the connection.
 
 | 0.9 | 0.10 |
 |---|---|
@@ -1791,4 +1797,20 @@ assert_eq!((verified.protocol, len), (None, response.len()));
 let conn = client.connection(&verified);
 # let _ = conn;
 # Ok::<(), ws_net::HandshakeError>(())
+```
+
+One change of default: [`Keepalive::new`](#keepalive-millis-tick) times a
+data message out after 60 s (`MessageTimeout`, Close 1008), where 0.9 had
+no message timeout. It is measured on the caller's clock, so it applies
+only where `on_time` is called (the `blocking` adapter calls it around
+each read). A service that receives messages taking longer than that,
+such as large uploads on slow links, raises it:
+
+```rust
+use core::time::Duration;
+use ws_net::{Connection, Keepalive};
+
+let conn = Connection::server()
+    .with_keepalive(Keepalive::new().with_message_timeout(Duration::from_secs(600)));
+# let _ = conn;
 ```

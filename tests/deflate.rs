@@ -996,3 +996,35 @@ fn test_fuzz_inputs_same_whole_and_split() {
         assert_eq!(run(&[rest]), run(&pieces), "input {data:?}");
     }
 }
+
+/// Review F-3 (D-081): inflated text was checked only once the whole
+/// message was inflated, so a compressed text message whose first byte is
+/// bad UTF-8 kept inflating (and holding memory) until its last fragment.
+/// It now fails within the first fragment, at the first check point.
+#[test]
+fn test_compressed_text_bad_byte_fails_in_first_fragment() {
+    let (mut srv, cli) = pair(DeflateConfig::new(), DeflateConfig::new());
+    // A binary message from the client, sent in 1 KiB frames, becomes a
+    // text message once its first opcode says so: text that starts with
+    // 0xFF, which no UTF-8 sequence does.
+    let mut cli = cli.with_limits(Limits::new().with_send_frame(1024));
+    let mut data = vec![0xFF];
+    let mut x = 1u32;
+    data.extend((0..8 << 20).map(|_| {
+        // Letters from a small generator: compressible, but not a run.
+        x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        b'a' + (x >> 16) as u8 % 4
+    }));
+    cli.send_binary(&data).unwrap();
+    let mut wire = cli.output().to_vec();
+    assert_eq!(wire[0], 0x42, "a compressed binary first frame, not final");
+    wire[0] = 0x41; // text
+    let (h, n) = ws_net::frame::FrameHeader::decode(&wire).unwrap().unwrap();
+    let first = &wire[..n + h.payload_len as usize];
+    assert!(first.len() < wire.len(), "more fragments follow");
+    assert_eq!(srv.feed(first), first.len());
+    assert_eq!(srv.poll().unwrap_err(), WsError::InvalidUtf8);
+    // Fails at the first check point (1 KiB of compressed input), holding
+    // far less than the 8 MiB message.
+    assert!(srv.memory_in_use() < 1 << 20, "{}", srv.memory_in_use());
+}

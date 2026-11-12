@@ -25,6 +25,41 @@
 - `docs/API.md`: a "Tier 1 at a glance" table (accept, connect, receive,
   send, close, sans-IO and blocking) with a socket example; the README's
   quick start adds the blocking client and server.
+- `Keepalive::new` (and so every connection) times a data message out
+  after 60 s (`MessageTimeout`, Close 1008); it was off. A peer that
+  starts a message and stops sending no longer holds the reassembly buffer
+  for as long as the TCP connection lives. `with_message_timeout` raises
+  it; `Duration::MAX` turns it off.
+- The `feed` examples check the count `feed` returns (they dropped it with
+  `let _ =`), and `feed`'s docs show the loop for a read larger than the
+  input buffer.
+
+### Fixed
+
+From the independent review of 0.9.0; a regression test for each.
+
+- A frame header claiming a large payload reserved up to 1 MiB of
+  reassembly space before any payload arrived, so 14 bytes per connection
+  held 1 MiB that `release_memory` could not free. Reassembly now grows
+  only as payload bytes arrive (at most four times what arrived)
+  (`tests/review.rs`).
+- Buffers that held message bytes went back to the allocator unzeroed
+  when freed or regrown in normal operation (a message or send over
+  `retain`, a buffer doubling, `release_memory`, the compression engines
+  dropped by `release_memory`), so `wipe` could not reach those copies.
+  They now move to a new allocation and the old one is zeroed first; the
+  one exception is compress-lib growing the buffer itself when a piece
+  inflates to more than four times its size (`tests/wipe.rs`).
+- Compressed text was checked as UTF-8 only once the whole message was
+  inflated, so a bad first byte held up to `max_message` of output until
+  the last fragment. It is now checked as it is inflated, every KiB of
+  compressed input and at each frame's end, points that do not depend on
+  how the input was split (`tests/deflate.rs`).
+- The README said a client's masking keys and nonce come from the standard
+  library's hasher keys (they come from the OS cryptographic source) and
+  that the crate has no dependencies (it has no third-party ones), and
+  that a browser handshake allocates once (`ServerHandshake::from_head`
+  does; the Tier 1 `accept` allocates the response too).
 - `interop/net-io` on net-io 0.7.0 (its reactor fix for a reader that lost
   its place on the starved list, and the output-buffer reuse); no source
   change. The 24-hour reactor soak runs on it.

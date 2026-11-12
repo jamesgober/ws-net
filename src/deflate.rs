@@ -42,9 +42,10 @@ mod off {
         pub(crate) fn inflate(
             &mut self,
             _chunk: &[u8],
-            _last: bool,
+            _ends: (bool, bool),
             _msg: &mut Vec<u8>,
             _max_message: u64,
+            _text: bool,
         ) -> Result<(), WsError> {
             match *self {}
         }
@@ -601,6 +602,21 @@ pub(crate) mod on {
 
     /// One connection's compression state: the agreement, an engine per
     /// direction (built on first use), and the message being inflated.
+    /// Compressed bytes between the points where inflated text is checked.
+    const CHECK_EVERY: u64 = 1024;
+
+    /// Checks the inflated text after the first `checked` bytes of `msg`. A
+    /// sequence cut at the end is left for the next piece of output.
+    fn check_inflated(msg: &[u8], checked: &mut usize) -> Result<(), WsError> {
+        let rest = msg.get(*checked..).unwrap_or(&[]);
+        match core::str::from_utf8(rest) {
+            Ok(_) => *checked = msg.len(),
+            Err(e) if e.error_len().is_none() => *checked += e.valid_up_to(),
+            Err(_) => return Err(WsError::InvalidUtf8),
+        }
+        Ok(())
+    }
+
     pub(crate) struct Codec {
         negotiated: Negotiated,
         tx_config: MessageConfig,
@@ -616,6 +632,10 @@ pub(crate) mod on {
         inflating: bool,
         /// Compressed bytes of the message being received.
         wire: u64,
+        /// Compressed bytes of the message inflated so far.
+        fed: u64,
+        /// Bytes of an inflated text message already checked as UTF-8.
+        checked: usize,
     }
 
     impl Codec {
@@ -659,6 +679,8 @@ pub(crate) mod on {
                 scratch: Vec::new(),
                 inflating: false,
                 wire: 0,
+                fed: 0,
+                checked: 0,
             }))
         }
 
@@ -670,6 +692,8 @@ pub(crate) mod on {
         pub(crate) fn begin(&mut self, compressed: bool) {
             self.inflating = compressed;
             self.wire = 0;
+            self.fed = 0;
+            self.checked = 0;
         }
 
         pub(crate) fn inflating(&self) -> bool {
@@ -696,12 +720,53 @@ pub(crate) mod on {
         /// The output is capped at `max_message` while it is produced, so a
         /// compressed bomb stops at the budget (1009).
         ///
-        /// Inflated text is validated whole once the message is complete,
-        /// not piece by piece: compress-lib drops the output of a step that
-        /// fails, so a check in pieces would report a bad byte or a failure
-        /// after it depending on how the input was split. The budget bounds
-        /// the work before the check.
+        /// `ends` is (this piece ends a frame, it ends the message).
+        ///
+        /// Text (`text`) is checked as
+        /// it is inflated, so a bad byte fails the connection without
+        /// inflating the rest, but only at fixed points of the compressed
+        /// stream: every [`CHECK_EVERY`] bytes from the message's start and
+        /// at each frame's end, where the output is the same however the
+        /// input arrived. Checking wherever a read happened to end would not
+        /// be: compress-lib drops the output of a step that fails, so a bad
+        /// byte would be reported or not depending on the split. The last
+        /// piece is checked whole with the message.
         pub(crate) fn inflate(
+            &mut self,
+            chunk: &[u8],
+            ends: (bool, bool),
+            msg: &mut Vec<u8>,
+            max_message: u64,
+            text: bool,
+        ) -> Result<(), WsError> {
+            let (frame_end, last) = ends;
+            if !text {
+                return self.inflate_piece(chunk, last, msg, max_message);
+            }
+            let mut rest = chunk;
+            loop {
+                let to_point =
+                    usize::try_from(CHECK_EVERY - self.fed % CHECK_EVERY).unwrap_or(usize::MAX);
+                let (piece, tail) = rest.split_at(rest.len().min(to_point));
+                let end = tail.is_empty();
+                self.inflate_piece(piece, last && end, msg, max_message)?;
+                self.fed = self.fed.saturating_add(piece.len() as u64);
+                if (piece.len() == to_point || (end && frame_end)) && !(end && last) {
+                    check_inflated(msg, &mut self.checked)?;
+                }
+                if end {
+                    return Ok(());
+                }
+                rest = tail;
+            }
+        }
+
+        /// Inflates one piece onto `msg`. Room for four times the piece is
+        /// made first, through [`grow`](crate::conn::grow), which zeroes the
+        /// allocation it replaces; compress-lib fills that room before
+        /// growing `msg` itself, which a piece inflating more than that
+        /// still makes it do.
+        fn inflate_piece(
             &mut self,
             chunk: &[u8],
             last: bool,
@@ -717,6 +782,11 @@ pub(crate) mod on {
                 return Err(WsError::AllocationFailed);
             };
             let max = usize::try_from(max_message).unwrap_or(usize::MAX);
+            // `msg` holds only this message, so this is what is left of
+            // its budget.
+            let left = max.saturating_sub(msg.len());
+            let ahead = chunk.len().saturating_mul(4).max(256).min(left);
+            crate::conn::grow(msg, ahead, max_message, crate::conn::Claim::NONE)?;
             // budget: max_message: compress-lib caps the output at `max`
             // while inflating, growing `msg` with `try_reserve_exact`.
             match rx.decompress_fragment(chunk, last, msg, max) {
@@ -732,6 +802,8 @@ pub(crate) mod on {
         pub(crate) fn end_message(&mut self) {
             self.inflating = false;
             self.wire = 0;
+            self.fed = 0;
+            self.checked = 0;
         }
 
         /// Compresses `data` for sending, or `None` to send it as it is:
@@ -753,6 +825,15 @@ pub(crate) mod on {
             }
             let tx = self.tx.as_mut()?;
             self.scratch.clear();
+            // Room for the message, a sixteenth more (DEFLATE grows
+            // incompressible data far less), and the 1 KiB compress-lib asks
+            // for on each step: it then never regrows the scratch buffer
+            // itself, and `grow` zeroes the allocation it replaces.
+            let room = data
+                .len()
+                .saturating_add(data.len() / 16)
+                .saturating_add(2048);
+            crate::conn::grow(&mut self.scratch, room, u64::MAX, crate::conn::Claim::NONE).ok()?;
             // budget: caller: the compressed form of a message the caller
             // sends, checked against `max_output` before it is queued.
             if tx.compress_message(data, &mut self.scratch).is_err()
@@ -779,7 +860,7 @@ pub(crate) mod on {
         /// Frees the compression scratch buffer when it outgrew `retain`.
         pub(crate) fn trim(&mut self, retain: usize) {
             if self.scratch.capacity() > retain {
-                self.scratch = Vec::new();
+                crate::conn::free_vec(&mut self.scratch);
             } else {
                 self.scratch.clear();
             }
@@ -795,13 +876,21 @@ pub(crate) mod on {
         /// Drops the engines that hold no context between messages, and
         /// the scratch buffer.
         pub(crate) fn release(&mut self) {
+            // The engines' windows hold plaintext of earlier messages: zero
+            // them before they go back to the allocator.
             if !self.tx_keep {
+                if let Some(tx) = self.tx.as_mut() {
+                    tx.wipe();
+                }
                 self.tx = None;
             }
             if !self.rx_keep && !self.inflating {
+                if let Some(rx) = self.rx.as_mut() {
+                    rx.wipe();
+                }
                 self.rx = None;
             }
-            self.scratch = Vec::new();
+            crate::conn::free_vec(&mut self.scratch);
         }
 
         /// Heap bytes held: this state and both engines.

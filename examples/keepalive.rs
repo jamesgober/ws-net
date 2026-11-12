@@ -35,11 +35,11 @@ fn main() -> Result<(), WsError> {
             println!("{:>6} ms: server pinged", now.as_u64());
             // The client answers (its Pong is automatic) and the server
             // sees the bytes: activity, so the idle timer restarts.
-            let _ = client.feed(&ping);
+            assert_eq!(client.feed(&ping), ping.len());
             let _ = client.poll()?;
             let pong = client.output().to_vec();
             client.advance_output(pong.len());
-            let _ = server.feed(&pong);
+            assert_eq!(server.feed(&pong), pong.len());
             // A driver ticks after every read: the input is activity.
             let _ = server.on_time(now)?;
             if let Event::Pong(payload) = server.poll()? {
@@ -56,7 +56,7 @@ fn main() -> Result<(), WsError> {
     client.send_text_fragment("the beginning of", false)?;
     let wire = client.output().to_vec();
     client.advance_output(wire.len());
-    let _ = server.feed(&wire);
+    assert_eq!(server.feed(&wire), wire.len());
     let _ = server.poll()?;
     let _ = server.on_time(now)?;
     while let Some(deadline) = server.next_deadline() {

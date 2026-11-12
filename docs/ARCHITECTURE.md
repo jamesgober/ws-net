@@ -69,7 +69,8 @@ from `parse-net`; the OS random source from `mod-rand`.
 
 Each `poll` does at most the work of the bytes buffered (at most the input
 buffer) and returns at most one event. A reassembly buffer never grows past
-`max_message`, and reserves at most 1 MiB ahead of arrived bytes.
+`max_message`, and grows only as bytes arrive; a buffer that held message
+bytes moves to a new allocation and is zeroed before it is freed.
 
 ## Sending
 
@@ -128,8 +129,8 @@ clock that goes backwards counts as no time passing.
 | Buffer | Bound | Released |
 |---|---|---|
 | input | `input_buffer` (64 KiB; 256 B to 1 MiB) | `release_memory` |
-| reassembly (binary bytes, or a text `String`) | the message, at most `max_message`, plus up to 1 MiB reserved ahead | after delivery when larger than `retain`; `release_memory` |
-| output | `max_output` + 256 B; capacity up to twice that, plus 64 KiB before compaction | drained and larger than `retain`; `release_memory` |
+| reassembly (binary bytes, or a text `String`) | the message, at most `max_message`; at most four times what arrived; the old buffer, at most half the budget, while it regrows | after delivery when larger than `retain`; `release_memory` |
+| output | `max_output` + 262 B, plus 64 KiB before compaction; the old buffer, at most half of that, while it regrows | drained and larger than `retain`; `release_memory` |
 | client key batch | 1 KiB (256 keys) | `release_memory` (refilled on the next send) |
 | handshake record | one exact allocation (target, Host, Origin, protocols, extensions) | with the `ServerHandshake` |
 | inline | `size_of::<Connection>()`, at most 512 bytes | never |

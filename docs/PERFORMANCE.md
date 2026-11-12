@@ -205,6 +205,8 @@ buffers pays. A server for large messages should size net-io's
 From `tests/memory.rs` (a counting allocator, every platform in CI):
 receiving and sending small messages, fragmented messages, Ping floods,
 idle keepalive ticks, prepared sends, and the Close echo allocate nothing
-once the buffers have grown; a browser handshake allocates once; an idle
+once the buffers have grown; `ServerHandshake::from_head` reads a browser
+request with one allocation (the Tier 1 `accept` makes two, adding the
+response); an idle
 connection after `release_memory` holds no heap, and its inline size is at
 most 512 bytes.

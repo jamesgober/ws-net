@@ -25,7 +25,7 @@ use crate::close::CloseCode;
 ///
 /// let mut conn = Connection::server();
 /// // An unmasked frame from a client.
-/// let _ = conn.feed(&[0x81, 0x02, b'h', b'i']);
+/// assert_eq!(conn.feed(&[0x81, 0x02, b'h', b'i']), 4);
 /// let err = conn.poll().unwrap_err();
 /// assert_eq!(err, WsError::UnmaskedFrame);
 /// assert_eq!(err.close_code(), Some(CloseCode::PROTOCOL_ERROR));

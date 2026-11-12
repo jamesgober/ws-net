@@ -41,7 +41,7 @@ From the independent review of 0.9.0; a regression test for each.
 - A frame header claiming a large payload reserved up to 1 MiB of
   reassembly space before any payload arrived, so 14 bytes per connection
   held 1 MiB that `release_memory` could not free. Reassembly now grows
-  only as payload bytes arrive (at most four times what arrived)
+  only as payload bytes arrive (at most eight times what arrived, or the input buffer)
   (`tests/review.rs`).
 - Buffers that held message bytes went back to the allocator unzeroed
   when freed or regrown in normal operation (a message or send over

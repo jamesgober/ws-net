@@ -129,7 +129,7 @@ clock that goes backwards counts as no time passing.
 | Buffer | Bound | Released |
 |---|---|---|
 | input | `input_buffer` (64 KiB; 256 B to 1 MiB) | `release_memory` |
-| reassembly (binary bytes, or a text `String`) | the message, at most `max_message`; at most four times what arrived; the old buffer, at most half the budget, while it regrows | after delivery when larger than `retain`; `release_memory` |
+| reassembly (binary bytes, or a text `String`) | the message, at most `max_message`; at most eight times what arrived, or the input buffer; the old buffer, at most half the budget, while it regrows | after delivery when larger than `retain`; `release_memory` |
 | output | `max_output` + 262 B, plus 64 KiB before compaction; the old buffer, at most half of that, while it regrows | drained and larger than `retain`; `release_memory` |
 | client key batch | 1 KiB (256 keys) | `release_memory` (refilled on the next send) |
 | handshake record | one exact allocation (target, Host, Origin, protocols, extensions) | with the `ServerHandshake` |

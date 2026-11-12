@@ -241,7 +241,7 @@ ways, and this close order, checked step by step. CI runs it on Linux.
 | Buffer | Bound | Released |
 |---|---|---|
 | input | `Limits::input_buffer` (64 KiB default; 256 B to 1 MiB) | `release_memory` (kept between reads otherwise) |
-| reassembly | the message received so far, never above `max_message`; grows as bytes arrive (at most four times what arrived), and while it regrows also holds the old buffer, at most half the budget, until it is copied and zeroed | after delivery when larger than `retain`; `release_memory` |
+| reassembly | the message received so far, never above `max_message`; grows as bytes arrive (at most eight times what arrived, or the input buffer), and while it regrows also holds the old buffer, at most half the budget, until it is copied and zeroed | after delivery when larger than `retain`; `release_memory` |
 | output | `max_output` + 262 bytes for automatic Pong and Close plus 64 KiB of written prefix before compaction; while it regrows, also the old buffer (at most half of that) until it is copied and zeroed | when drained and larger than `retain`; `release_memory` |
 | compression (feature `deflate`) | compressor about 330 KiB at 15 bits (about 30 KiB at 9), decompressor about 12 KiB plus the window with client takeover | `release_memory` for each one without takeover; `wipe` |
 | inline | `size_of::<Connection>()`, at most 512 bytes (tested) | never |

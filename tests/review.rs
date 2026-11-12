@@ -54,7 +54,7 @@ fn test_fragment_header_reserves_nothing() {
     assert_eq!(conn.feed(&h), h.len());
     assert!(matches!(conn.poll(), Ok(Event::NeedInput)));
     assert_eq!(conn.memory_in_use(), after_data);
-    // At most four times what arrived (here the claim ends at 1 MiB), plus
+    // The claim ends at 1 MiB, so at most that, plus
     // the input buffer.
     assert!(after_data <= (2 << 20) + 64 * 1024, "{after_data}");
 }

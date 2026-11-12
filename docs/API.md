@@ -321,8 +321,8 @@ what this end sends is bounded too:
   against [`Limits::max_message`](#limits) before each fragment is read.
   Either violation fails with 1009. A message's buffer never grows past the
   message budget.
-- Reassembly grows only as payload bytes arrive (to at most four times
-  what arrived, never past a final frame's end), even with the budgets lifted to `u64::MAX`: a length
+- Reassembly grows only as payload bytes arrive (to at most eight times
+  what arrived or the input buffer, never past a final frame's end), even with the budgets lifted to `u64::MAX`: a length
   in a header is a claim, not an allocation. A message that stops arriving
   fails after the [message timeout](#keepalive-millis-tick) (60 s by
   default).

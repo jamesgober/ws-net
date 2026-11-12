@@ -1277,11 +1277,13 @@ impl Connection {
 }
 
 /// What a frame still claims after the bytes being added: `ahead` more
-/// payload bytes, and whether it is the message's final frame.
+/// payload bytes, and whether it is the message's final frame; `floor` is
+/// the input buffer's size, room a claim may take before more has arrived.
 #[derive(Clone, Copy)]
 pub(crate) struct Claim {
     pub(crate) ahead: usize,
     pub(crate) last: bool,
+    pub(crate) floor: usize,
 }
 
 impl Claim {
@@ -1290,8 +1292,14 @@ impl Claim {
     pub(crate) const NONE: Self = Self {
         ahead: 0,
         last: false,
+        floor: 0,
     };
 }
+
+/// How far ahead of the bytes that arrived a claim may reserve: eight
+/// times them (or the input buffer, when more). A 1 MiB frame then regrows
+/// once, from 64 KiB, instead of doubling up from the first read.
+const AHEAD_FACTOR: usize = 8;
 
 /// Makes room for `need` more bytes in a reassembly buffer (see [`room`]).
 pub(crate) fn grow(
@@ -1332,9 +1340,10 @@ fn grow_text(
 
 /// A new, empty reassembly allocation for a buffer of `capacity` holding
 /// `len` bytes that needs `need` more. It doubles, and toward what the
-/// frame claims it grows up to four times what will have arrived: a 1 MiB
-/// frame regrows twice, not five times, and the buffer stays a multiple of
-/// the bytes the peer sent, never the claim alone. It never passes the end
+/// frame claims it grows to [`AHEAD_FACTOR`] times what will have arrived,
+/// or the input buffer's size when that is more: the buffer stays a
+/// multiple of the bytes the peer sent, never the claim alone (a header
+/// with no payload reserves nothing). It never passes the end
 /// of a final frame, nor the message budget (the budget was checked against
 /// the header, so `len + need` fits it), so a message's buffer holds at
 /// most `max_message` bytes. Once the next doubling would pass the budget
@@ -1352,9 +1361,11 @@ fn room(
     let budget = usize::try_from(max_message).unwrap_or(usize::MAX);
     let wanted = len.saturating_add(need);
     let claimed = wanted.saturating_add(claim.ahead);
-    let mut target = capacity
-        .saturating_mul(2)
-        .max(wanted.saturating_mul(4).min(claimed));
+    let ahead = wanted
+        .saturating_mul(AHEAD_FACTOR)
+        .max(claim.floor)
+        .min(claimed);
+    let mut target = capacity.saturating_mul(2).max(ahead);
     if target.saturating_mul(2) > budget {
         target = budget;
     }
@@ -1438,6 +1449,7 @@ fn poll_inner<'r>(
                                 let claim = Claim {
                                     ahead: usize::try_from(f.remaining).unwrap_or(usize::MAX),
                                     last: f.fin,
+                                    floor: limits.input_buffer(),
                                 };
                                 let max = limits.max_message();
                                 if let Err(e) = grow(&mut reader.msg, chunk.len(), max, claim) {
@@ -1451,6 +1463,7 @@ fn poll_inner<'r>(
                                 let claim = Claim {
                                     ahead: usize::try_from(f.remaining).unwrap_or(usize::MAX),
                                     last: f.fin,
+                                    floor: limits.input_buffer(),
                                 };
                                 let max = limits.max_message();
                                 let grown = grow_text(&mut reader.text, need, max, claim);
@@ -1662,7 +1675,7 @@ fn poll_inner<'r>(
             // Nothing is reserved for the announced length: it is the
             // peer's claim, so 14 bytes of header could hold a frame budget
             // of memory. The buffer grows as payload bytes arrive, to at
-            // most four times what arrived (see `room`).
+            // most eight times what arrived (see `room`).
             let streaming = Streaming {
                 kind,
                 fin: header.fin,

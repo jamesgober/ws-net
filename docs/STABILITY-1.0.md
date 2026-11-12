@@ -42,8 +42,10 @@ Each was revisited in 0.9 (D-070) and stays, with its reason:
 - NFR-8 (20% above the best Rust competitor) holds for small receives and
   sends, not for the handshake on Linux and macOS (1.02 and 1.12 against
   tungstenite), where ws-net checks more (the strict head grammar, the Host
-  and Origin policy), nor for one 1 MiB message (level), a single copy and
-  validation in both and bound by memory.
+  and Origin policy), nor for one 1 MiB message (0.60 to 0.94 in 0.10):
+  ws-net zeroes the buffer before freeing it and does not reserve the
+  claimed length (D-081), which `Limits::with_retain` avoids for services
+  of large messages.
 - NFR-10's 1.5x ASCII validation target: `core::str::from_utf8` already
   checks ASCII a word at a time; more needs SIMD intrinsics, which
   `forbid(unsafe_code)` rules out (D-029).

@@ -113,7 +113,7 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 Released as 0.10.0: the simplicity audit (D-080) changed the client's response check.
 - [x] Simplicity audit of the public API: `ClientHandshake::verify` and `verify_head` return `Verified`, `verify_full` removed; Tier 1 gathered in `docs/API.md` (D-080).
 - [x] Independent review of 0.9.0: the medium (memory reserved ahead of arrived bytes, no default message timeout) and the four lows (unzeroed freed buffers, compressed text checked late, examples dropping `feed`'s count, README claims) fixed, a regression test each (D-081).
-- [ ] The 72-hour fuzz runs, restarted 2026-11-08 (D-071); `deflate_message` again on compress-lib 1.0.0 (D-076); four targets resumed after clock steps (D-078); all cut by a WSL restart after 38 to 64 hours clean and restarted on the 0.10.0 code (D-079, D-080).
+- [ ] The 72-hour fuzz runs, restarted 2026-11-08 (D-071); `deflate_message` again on compress-lib 1.0.0 (D-076); four targets resumed after clock steps (D-078); all cut by a WSL restart after 38 to 64 hours clean and restarted on the 0.10.0 code (D-079, D-080), and again on the review fixes, ending 2026-11-15T01:29Z (D-081).
 - [x] The 24-hour socket soak on net-io's reactor, on net-io 0.7.0 (D-068): clean, 3.70 billion messages, heap flat (D-077).
 - [x] net-io 0.7.0 in `interop/net-io`, no source change (D-072).
 - [x] net-io 0.7.1 in `interop/net-io`, no source change (D-075).

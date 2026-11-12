@@ -1,4 +1,4 @@
-//! Review F-2 (D-081): a buffer that held message bytes went back to the
+//! A buffer that held message bytes went back to the
 //! allocator with them still in it whenever it was freed or regrown in
 //! normal operation (a message over `retain`, a large send once written,
 //! a reassembly buffer doubling, `release_memory`), so [`wipe`] could not

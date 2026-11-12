@@ -1,5 +1,5 @@
-//! Regression tests from the v0.2.0 adversarial review. Each test was
-//! written failing before its fix; the name says what was wrong.
+//! Regression tests for the defects fixed from 0.2.0 to 0.9.0. Each test
+//! was written failing before its fix; the name says what was wrong.
 
 mod common;
 
@@ -229,7 +229,7 @@ fn test_streamed_text_detach_moves_without_copy() {
     assert_eq!(owned, text.as_bytes());
 }
 
-// From the v0.7.0 security review.
+// Fixed in 0.7.0.
 
 const REQUEST: &str = "GET /chat HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n";
 
@@ -416,7 +416,7 @@ fn test_control_frame_split_counted_once() {
     assert_eq!(stats.data_frames_in(), 2);
 }
 
-/// 0.9 review: a connection with no keepalive set still has the 5 s close
+/// Fixed in 0.9: a connection with no keepalive set still has the 5 s close
 /// timeout, so a peer that never answers the Close releases the transport.
 #[test]
 fn test_close_timeout_without_keepalive() {
@@ -434,7 +434,7 @@ fn test_close_timeout_without_keepalive() {
     assert_eq!(idle.next_deadline(), None);
 }
 
-/// 0.9 review: a full input buffer is parsed, not copied, while it holds
+/// Fixed in 0.9: a full input buffer is parsed, not copied, while it holds
 /// more than a frame header or a control frame: feeding after every event
 /// stays linear.
 #[test]
@@ -471,7 +471,7 @@ fn test_full_input_not_compacted_per_event() {
     assert_eq!(events, wire.len() / 6);
 }
 
-/// 0.9 review: `detach_message` gives nothing once input was fed, however
+/// Fixed in 0.9: `detach_message` gives nothing once input was fed, however
 /// the buffer moved.
 #[test]
 fn test_detach_none_after_feed() {
@@ -482,7 +482,7 @@ fn test_detach_none_after_feed() {
     assert_eq!(conn.detach_message(&mut Vec::new()), None);
 }
 
-/// 0.9 review: the largest time does not switch the idle timeout off.
+/// Fixed in 0.9: the largest time does not switch the idle timeout off.
 #[test]
 fn test_idle_timeout_at_largest_time() {
     use ws_net::{Keepalive, Millis};
@@ -492,7 +492,7 @@ fn test_idle_timeout_at_largest_time() {
     assert_eq!(conn.on_time(Millis(u64::MAX)), Err(WsError::IdleTimeout));
 }
 
-/// 0.9 review: a client fails a response whose `Upgrade` names more than
+/// Fixed in 0.9: a client fails a response whose `Upgrade` names more than
 /// `websocket` (RFC 6455 section 4.1).
 #[test]
 fn test_client_upgrade_must_be_websocket_alone() {

@@ -997,7 +997,7 @@ fn test_fuzz_inputs_same_whole_and_split() {
     }
 }
 
-/// Review F-3 (D-081): inflated text was checked only once the whole
+/// Inflated text was checked only once the whole
 /// message was inflated, so a compressed text message whose first byte is
 /// bad UTF-8 kept inflating (and holding memory) until its last fragment.
 /// It now fails within the first fragment, at the first check point.

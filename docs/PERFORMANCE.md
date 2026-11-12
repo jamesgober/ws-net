@@ -2,7 +2,7 @@
 
 Measured numbers, how they were taken, and how to reproduce them. Every table comes from one run
 of `.github/workflows/bench.yml` on GitHub's hosted runners, so the three platforms ran the same
-commit at the same time; each section names its run. The 0.10 cost of the review fixes is
+commit at the same time; each section names its run. The 0.10 cost of the memory fixes is
 first, then the 0.9 pass; the tables after them are the 0.6 to 0.8 record (commit `4359c49`, run 41899339504). Hosted runners are shared virtual
 machines: compare rows within one run and one platform, never across runs. The development
 machine (shared by many builds, load near 40 on 32 cores) was too noisy to publish from.

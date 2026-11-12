@@ -1,5 +1,5 @@
-//! Regression tests from the independent review of 0.9.0 (D-081). Each
-//! test failed on 0.9.0; the name says what is now true. The zeroing of
+//! Regression tests for the bugs fixed in 0.10.0 (D-081). Each test
+//! failed on 0.9.0; the name says what is now true. The zeroing of
 //! freed buffers is in `tests/wipe.rs` (it needs its own allocator), and
 //! the incremental check of compressed text in `tests/deflate.rs`.
 
@@ -20,7 +20,7 @@ fn header_only(opcode: Opcode, fin: bool, len: u64) -> Vec<u8> {
     out
 }
 
-/// F-1: a header claiming a 1 MiB payload reserved 1 MiB before any of it
+/// A header claiming a 1 MiB payload reserved 1 MiB before any of it
 /// arrived, so 14 bytes per connection held a frame budget of memory.
 /// Reassembly now grows only as payload bytes arrive.
 #[test]
@@ -37,7 +37,7 @@ fn test_header_alone_reserves_nothing() {
     assert!(held <= 64 * 4096, "64 headers hold {held} bytes");
 }
 
-/// F-1: the same for each fragment's header: after 1 MiB of real data,
+/// The same for each fragment's header: after 1 MiB of real data,
 /// a continuation header alone added a second 1 MiB.
 #[test]
 fn test_fragment_header_reserves_nothing() {
@@ -59,7 +59,7 @@ fn test_fragment_header_reserves_nothing() {
     assert!(after_data <= (2 << 20) + 64 * 1024, "{after_data}");
 }
 
-/// F-1: no default timer ended a message that stopped arriving, so the
+/// No default timer ended a message that stopped arriving, so the
 /// peer held its reassembly buffer for as long as the TCP connection
 /// lived. The default `Keepalive` now times a message out after 60 s.
 #[test]
@@ -117,7 +117,7 @@ fn documented_files() -> Vec<(String, String)> {
         .collect()
 }
 
-/// F-4: the examples dropped `feed`'s count with `let _ =`, which loses
+/// The examples dropped `feed`'s count with `let _ =`, which loses
 /// whatever did not fit the input buffer when copied into a socket loop.
 /// Every example now checks it or feeds the rest.
 #[test]
@@ -133,7 +133,7 @@ fn test_examples_never_drop_the_feed_count() {
     }
 }
 
-/// F-5: the README said a client's masking keys and nonce came from the
+/// The README said a client's masking keys and nonce came from the
 /// standard library's hasher keys (they come from the OS cryptographic
 /// source), and that the crate has no dependencies (it has three
 /// first-party ones).

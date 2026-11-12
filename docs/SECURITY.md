@@ -119,7 +119,7 @@ is below; every crash becomes a regression test before it is fixed.
 
 All ten targets, 24 hours each, at once on one shared machine (WSL,
 nightly, one libFuzzer process per target), on the code after the
-review fixes. No crash, no timeout, no out-of-memory, no artifact.
+fixes below. No crash, no timeout, no out-of-memory, no artifact.
 35.32 billion inputs in all.
 
 | Target | Inputs run | Findings |
@@ -161,11 +161,11 @@ grew, for the full 72 hours before 1.0.
 | `differential_tungstenite` | 137 million | none |
 | `deflate_message` | 118 million | none |
 
-## Review
+## Defects fixed
 
-Before 0.7.0 two independent reviews read the engine and the handshake
-against this threat model. They found twelve defects, none reachable for
-code execution or a crash (the crate forbids `unsafe`), all fixed in 0.7.0
+Before 0.7.0 the engine and the handshake were checked again against
+this threat model. Twelve defects turned up, none reachable for code
+execution or a crash (the crate forbids `unsafe`), all fixed in 0.7.0
 with a regression test each (`tests/regressions.rs`):
 
 | Area | Defect | Effect before the fix |
@@ -183,8 +183,8 @@ with a regression test each (`tests/regressions.rs`):
 | logging | `ServerHandshake`'s `Debug` printed the query; `ClientHandshake`'s printed header values | a token in a query or `Authorization` could reach logs |
 | docs | `accept` did not warn that Tier 1 accepts any `Host` | a private-address service was open to DNS rebinding by default |
 
-In 0.9 a fresh review read the whole crate again, permessage-deflate
-included. Its confirmed findings are fixed with a test each:
+In 0.9 the whole crate was checked again, permessage-deflate included.
+The defects found are fixed with a test each:
 
 | Area | Defect | Effect before the fix |
 |---|---|---|
@@ -199,6 +199,16 @@ included. Its confirmed findings are fixed with a test each:
 
 The decompressor also takes a 9-bit window when 8 was agreed, as zlib
 sends; refusing it would break interoperability for 256 bytes of window.
+
+Fixed in 0.10, with a test each (`tests/fixes_0_10.rs`, `tests/wipe.rs`,
+`tests/deflate.rs`):
+
+| Area | Defect | Effect before the fix |
+|---|---|---|
+| memory | a frame header reserved reassembly space for the length it claimed | 14 bytes per connection held up to 1 MiB that `release_memory` could not free |
+| timers | no default timer ended a message that stopped arriving | a peer held its reassembly buffer for as long as the TCP connection lived |
+| memory | buffers that held message bytes were freed or regrown unzeroed | `wipe` could not reach those copies |
+| deflate | compressed text was checked as UTF-8 only once the whole message was inflated | a bad first byte held up to `max_message` of output until the last fragment |
 
 ## Reporting a vulnerability
 

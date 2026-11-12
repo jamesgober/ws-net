@@ -13,7 +13,7 @@ polish exit (`dev/ROADMAP.md`). 1.0 itself needs the owner's explicit go.
 | Conformance | Autobahn TestSuite sections 1 to 13, 517 cases, both roles, strict (OK or INFORMATIONAL only), in CI on every push | `autobahn/` |
 | Dependencies | no third-party runtime dependency; parse-net, mod-rand, and compress-lib 1 (optional) by published version | `deny.toml`, NFR-1 |
 | Safety | `#![forbid(unsafe_code)]`; no reachable panic on peer input; a lint wall on arithmetic and indexing | NFR-2, NFR-3 |
-| Security | a threat model with a test per threat (T-1 to T-29, the deflate threats included); two reviews before 0.7, a fresh one in 0.9, an independent one of 0.9.0 (one medium, four low, fixed in 0.10, D-081), every finding fixed with a test | `docs/SECURITY.md` |
+| Security | a threat model with a test per threat (T-1 to T-29, the deflate threats included); every defect found, before 0.7, in 0.9 and in 0.10 (D-081), fixed with a regression test | `docs/SECURITY.md` |
 | Fuzzing | ten targets 24 hours each before 0.7, clean; all eleven again in 0.9 (32 hours, `deflate_message` 25), clean, before WSL cut the 72-hour runs short | `docs/SECURITY.md`, D-071 |
 | Memory | `size_of::<Connection>()` at most 512 bytes; idle heap 0 after `release_memory`; every heap growth site names its budget | `tests/memory.rs`, `tests/budget_audit.rs` |
 | Allocation | no allocation per message in steady state; one to read a browser handshake (`ServerHandshake::from_head`) | counting-allocator tests, NFR-4 |

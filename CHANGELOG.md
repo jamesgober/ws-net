@@ -25,6 +25,17 @@
 - `docs/API.md`: a "Tier 1 at a glance" table (accept, connect, receive,
   send, close, sans-IO and blocking) with a socket example; the README's
   quick start adds the blocking client and server.
+- `interop/net-io` on net-io 0.7.0 (its reactor fix for a reader that lost
+  its place on the starved list, and the output-buffer reuse); no source
+  change. The 24-hour reactor soak runs on it.
+- `interop/net-io` on net-io 0.7.1 (an idle TLS connection on the reactor
+  gives back its buffers, as a plaintext one does); no source change.
+- compress-lib 1.0.0 for feature `deflate`, its stable release (the
+  `message` API unchanged since 0.7, no breaking change before its 2.0);
+  no source change. The `deflate_message` 72-hour run starts again on it.
+- The 24-hour socket soak on net-io's reactor (Linux, 500 clients, net-io
+  0.7.0) passed: 3.70 billion messages, heap flat (131 MiB in the first
+  hour, 128 MiB in the last), no connect retried.
 - `Keepalive::new` (and so every connection) times a data message out
   after 60 s (`MessageTimeout`, Close 1008); it was off. A peer that
   starts a message and stops sending no longer holds the reassembly buffer
@@ -36,13 +47,13 @@
 
 ### Fixed
 
-From the independent review of 0.9.0; a regression test for each.
+Each has a regression test.
 
 - A frame header claiming a large payload reserved up to 1 MiB of
   reassembly space before any payload arrived, so 14 bytes per connection
   held 1 MiB that `release_memory` could not free. Reassembly now grows
-  only as payload bytes arrive (at most eight times what arrived, or the input buffer)
-  (`tests/review.rs`).
+  only as payload bytes arrive, to at most eight times what arrived or
+  the input buffer (`tests/fixes_0_10.rs`).
 - Buffers that held message bytes went back to the allocator unzeroed
   when freed or regrown in normal operation (a message or send over
   `retain`, a buffer doubling, `release_memory`, the compression engines
@@ -60,17 +71,6 @@ From the independent review of 0.9.0; a regression test for each.
   that the crate has no dependencies (it has no third-party ones), and
   that a browser handshake allocates once (`ServerHandshake::from_head`
   does; the Tier 1 `accept` allocates the response too).
-- `interop/net-io` on net-io 0.7.0 (its reactor fix for a reader that lost
-  its place on the starved list, and the output-buffer reuse); no source
-  change. The 24-hour reactor soak runs on it.
-- `interop/net-io` on net-io 0.7.1 (an idle TLS connection on the reactor
-  gives back its buffers, as a plaintext one does); no source change.
-- compress-lib 1.0.0 for feature `deflate`, its stable release (the
-  `message` API unchanged since 0.7, no breaking change before its 2.0);
-  no source change. The `deflate_message` 72-hour run starts again on it.
-- The 24-hour socket soak on net-io's reactor (Linux, 500 clients, net-io
-  0.7.0) passed: 3.70 billion messages, heap flat (131 MiB in the first
-  hour, 128 MiB in the last), no connect retried.
 
 ---
 

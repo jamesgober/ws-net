@@ -110,9 +110,15 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 - [x] Budget audit (spec section 10.3): `tests/budget_audit.rs` finds every heap growth site in `src/` and requires a `// budget:` note naming its guard; 78 sites (D-054). Done in 0.8.
 
 ### v0.9.x - Pre-1.0 polish (before any release candidate)
-- [ ] The 72-hour fuzz runs, restarted 2026-11-08 (D-071); `deflate_message` again on compress-lib 0.9 once adopted.
-- [ ] The 24-hour socket soak on net-io's reactor, on net-io 0.7.0 (D-068).
-- [ ] Adopt net-io 0.7.0 in `interop/net-io` and compress-lib 0.9.0 for `deflate` when they publish.
+Released as 0.10.0: the simplicity audit (D-080) changed the client's response check.
+- [x] Simplicity audit of the public API: `ClientHandshake::verify` and `verify_head` return `Verified`, `verify_full` removed; Tier 1 gathered in `docs/API.md` (D-080).
+- [x] Fixed for 0.10.0: memory reserved ahead of arrived bytes, no default message timeout, unzeroed freed buffers, compressed text checked late, examples dropping `feed`'s count, two wrong README claims; a regression test each (D-081).
+- [ ] The 72-hour fuzz runs, restarted 2026-11-08 (D-071); `deflate_message` again on compress-lib 1.0.0 (D-076); four targets resumed after clock steps (D-078); all cut by a WSL restart after 38 to 64 hours clean and restarted on the 0.10.0 code (D-079, D-080), and again on the 0.10 fixes, ending 2026-11-15T01:29Z (D-081); `deflate_message` on compress-lib 1.1.0, ending 2026-11-16T00:34Z (D-082).
+- [x] The 24-hour socket soak on net-io's reactor, on net-io 0.7.0 (D-068): clean, 3.70 billion messages, heap flat (D-077).
+- [x] net-io 0.7.0 in `interop/net-io`, no source change (D-072).
+- [x] net-io 0.7.1 in `interop/net-io`, no source change (D-075).
+- [x] compress-lib 0.9.0 for `deflate`, no source change (D-073).
+- [x] compress-lib 1.0.0 for `deflate`, no source change (D-076).
 - [x] Revisit every accepted gap, deferred item, and missed target recorded in this file and the decision log; close it or record why it stays open (D-070).
 - [x] Fresh performance pass against tungstenite 0.30.0 (still its latest) and 0.8.0 in one hosted run: small receives 14 to 24% faster than 0.8.0 (`docs/PERFORMANCE.md`, D-070).
 - [x] Small sends behind 0.2.0 (D-033): the fast path skipping the exact size well under the budget and one capacity check per frame landed in 0.8; the remaining cost is the budget and counters, measured and recorded (D-053), to go into `docs/STABILITY-1.0.md`.

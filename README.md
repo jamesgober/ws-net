@@ -21,12 +21,12 @@
         <strong>ws-net</strong> implements the WebSocket protocol (RFC 6455) without doing I/O: the opening handshake, frame parsing and serialization, masking, fragmentation and reassembly, ping/pong, and the closing handshake. Bytes from your socket go in, messages come out; messages you send become bytes you write. The same engine runs over <code>std::net</code>, an async runtime, or a test harness in memory.
     </p>
     <p>
-        Every rule of the protocol is enforced, and every violation closes the connection with the right status code: masking direction, reserved bits and opcodes, control-frame size and fragmentation, minimal length encoding, fragment order, and UTF-8 validity of text, checked incrementally so a bad byte fails the connection the moment it arrives. Every size is bounded, checked from frame headers before any payload is read, so input from a hostile peer cannot grow memory past the budgets. The handshake works over raw request bytes on its own, or behind an HTTP layer such as <code>http-net</code>, and hands the server what its policy needs: the target, <code>Host</code>, <code>Origin</code>, and offered subprotocols. It is the WebSocket layer of LexerSketch Studio.
+        Every rule of the protocol is enforced, and every violation closes the connection with the right status code: masking direction, reserved bits and opcodes, control-frame size and fragmentation, minimal length encoding, fragment order, and UTF-8 validity of text, checked as it arrives so a bad byte fails the connection at once (compressed text within the next KiB of compressed input). Every size is bounded, checked from frame headers before any payload is read, so input from a hostile peer cannot grow memory past the budgets. The handshake works over raw request bytes on its own, or behind an HTTP layer such as <code>http-net</code>, and hands the server what its policy needs: the target, <code>Host</code>, <code>Origin</code>, and offered subprotocols. It is the WebSocket layer of LexerSketch Studio.
     </p>
     <br>
     <hr>
     <p>
-        <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>no_std</code>-compatible (needs only <code>alloc</code>), <code>#![forbid(unsafe_code)]</code>, no dependencies: SHA-1 and base64 for the handshake are implemented in the crate.
+        <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>no_std</code>-compatible (needs only <code>alloc</code>), <code>#![forbid(unsafe_code)]</code>, no third-party dependencies (parse-net, mod-rand, and for <code>deflate</code> compress-lib, all first party): SHA-1 and base64 for the handshake are implemented in the crate.
     </p>
     <blockquote>
         <strong>Status: pre-1.0.</strong> The public API is designed across the 0.x series and frozen at <code>1.0.0</code>, after LexerSketch Studio ships on it. See <a href="./docs/API.md"><code>docs/API.md</code></a> and <a href="./CHANGELOG.md"><code>CHANGELOG.md</code></a>.
@@ -56,7 +56,7 @@ What it guarantees, and how each guarantee is checked:
 |---|---|
 | The Autobahn TestSuite passes, strictly, in both roles. | Every case of sections 1 to 13 (517 cases, permessage-deflate's 12 and 13 included with the `deflate` feature) is OK in behavior and close behavior as a server and as a client, in CI on every change (`autobahn/check.py`; 3 cases are informational by the suite's own design). |
 | Frames follow RFC 6455 exactly; every violation fails the connection with the right close code. | 111 Autobahn-style cases written as data (framing, ping/pong, reserved bits and opcodes, fragmentation, UTF-8, close codes, limits, masking direction, length encoding), each run whole, in pieces of every size from 1 to 15 bytes, and split in two at every point, with identical results. |
-| Text is validated as UTF-8 incrementally, across fragment boundaries, and fails at the first bad byte (1007). | A property test accepts a text message exactly when `std::str::from_utf8` accepts its bytes, however it is fragmented and split. |
+| Text is validated as UTF-8 incrementally, across fragment boundaries, and fails at the first bad byte (1007); compressed text at the next check point, every KiB of compressed input and each frame's end. | A property test accepts a text message exactly when `std::str::from_utf8` accepts its bytes, however it is fragmented and split. |
 | Messages survive any fragmentation and any split of the wire bytes, with control frames interleaved. | Round-trip properties client to server and server to client, against the messages sent. |
 | A slow reader cannot grow this end's memory either. | The output budget refuses a send that would exceed it and changes nothing; Pong and Close still fit in a 262-byte headroom; a property checks the bound under random sends, drains, and Pings. |
 | Memory per connection is bounded and measured. | A counting allocator checks the peak of each scenario against the formula, zero heap for an idle connection after `release_memory`, and zero allocations per message in steady state. |
@@ -74,21 +74,21 @@ What it guarantees, and how each guarantee is checked:
 
 ```toml
 [dependencies]
-ws-net = "0.9"
+ws-net = "0.10"
 ```
 
 Without the standard library:
 
 ```toml
 [dependencies]
-ws-net = { version = "0.9", default-features = false }
+ws-net = { version = "0.10", default-features = false }
 ```
 
 With permessage-deflate (RFC 7692), from 0.9:
 
 ```toml
 [dependencies]
-ws-net = { version = "0.9", features = ["deflate"] }
+ws-net = { version = "0.10", features = ["deflate"] }
 ```
 
 <hr>
@@ -123,6 +123,28 @@ assert_eq!(conn.output(), [0x81, 0x05, b'H', b'e', b'l', b'l', b'o']);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+Over a `std` socket (or any `Read + Write` stream), the `blocking` module
+does the reads and writes:
+
+```rust
+use std::{net::{TcpListener, TcpStream}, thread};
+use ws_net::{Message, blocking};
+
+let listener = TcpListener::bind("127.0.0.1:0")?;
+let addr = listener.local_addr()?;
+let server = thread::spawn(move || -> Result<(), blocking::Error> {
+    let mut ws = blocking::accept(listener.accept()?.0)?; // same-origin policy, 101 written
+    let message = ws.read()?;
+    ws.send(&message) // echo
+});
+
+let mut ws = blocking::connect(TcpStream::connect(addr)?, &addr.to_string(), "/")?;
+ws.send_text("hello")?;
+assert_eq!(ws.read()?, Message::Text("hello".into()));
+server.join().expect("server thread")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ### Policy: who may connect
 
 A browser attaches the user's cookies to a WebSocket request from any page on any site, so a server that does not check `Origin` lets another site's page talk to it as the user (cross-site WebSocket hijacking). `accept` applies the same-origin rule by default; an `AcceptPolicy` sets an allowlist, the subprotocols, and the limits:
@@ -153,7 +175,7 @@ use ws_net::{CloseCode, Connection, WsError};
 
 let mut conn = Connection::server();
 // A masked text frame whose payload is not UTF-8.
-let _ = conn.feed(&[0x81, 0x81, 0, 0, 0, 0, 0xFF]);
+assert_eq!(conn.feed(&[0x81, 0x81, 0, 0, 0, 0, 0xFF]), 7);
 let err = conn.poll().unwrap_err();
 assert_eq!(err, WsError::InvalidUtf8);
 assert_eq!(err.close_code(), Some(CloseCode::INVALID_PAYLOAD));
@@ -210,7 +232,7 @@ Runnable programs in [`examples/`](./examples):
 
 ## Performance
 
-The hot paths do no per-message allocation (checked by a counting allocator in CI). A single-frame message already in the input buffer is unmasked in place and lent out with no copy; a streamed text message is validated once per byte as it arrives; frames are written straight into the output queue; client masking keys come from the OS in 1 KiB batches; a browser handshake allocates once.
+The hot paths do no per-message allocation (checked by a counting allocator in CI). A single-frame message already in the input buffer is unmasked in place and lent out with no copy; a streamed text message is validated once per byte as it arrives; frames are written straight into the output queue; client masking keys come from the OS in 1 KiB batches; `ServerHandshake::from_head` reads a browser request with one allocation.
 
 Against tungstenite 0.30.0 on the same bytes, on GitHub's hosted runners (ratio: tungstenite's median over ws-net's; above 1.00, ws-net is faster):
 
@@ -238,7 +260,7 @@ cd bench-compare && cargo bench --bench compare    # against tungstenite
 - **Sans-IO.** The engine never touches a socket, a clock, or a thread. That makes it testable byte by byte and usable from any driver. Keepalive and timeouts are a state machine over the caller's monotonic milliseconds (`on_time`, `next_deadline`); the `blocking` module is a thin adapter on top, not a second engine.
 - **Strict where the RFC is strict.** Payload lengths not in their shortest encoding are refused (RFC 6455 says the minimal encoding MUST be used, and accepting both forms gives one frame two encodings). A control frame using an extended length field is refused, whatever the field holds. The handshake head reader refuses bare CR or LF, line folding, and whitespace before a colon, and a request with two `Host` or two `Origin` fields, instead of picking one.
 - **Failures and refusals are different things.** A protocol violation fails the connection and queues the Close frame with its code; a call the protocol does not allow (an oversized Ping, a reserved close code, sending after Close) is refused and changes nothing. `WsError::close_code` tells them apart.
-- **Budgets come from headers, memory from bytes.** A frame or message over budget is refused from its header. A length in a header is a claim, so reassembly reserves at most 1 MiB ahead of the bytes that have actually arrived, even with the budgets lifted.
+- **Budgets come from headers, memory from bytes.** A frame or message over budget is refused from its header. A length in a header is a claim, so reassembly grows only as payload bytes arrive (at most eight times what arrived, or the input buffer), even with the budgets lifted, and a message that stops arriving times out after 60 s by default. A buffer that held message bytes is zeroed before it is freed or regrown.
 - **No third-party dependencies.** The shared HTTP grammar (tokens, lists, field values, `Origin`, `Host`) comes from the first-party `parse-net`, the OS cryptographic random source for masking seeds and nonces from the first-party `mod-rand` (feature `std`), and DEFLATE for permessage-deflate from the first-party `compress-lib` (feature `deflate`); none has dependencies of its own. SHA-1 (only for the handshake, as RFC 6455 fixes it; it is not used as a security primitive) and strict canonical base64 are small private modules.
 - **Compression is opt-in and bounded.** permessage-deflate (feature `deflate`) is negotiated only when the policy or the client asks, with no context takeover by default, so attacker-chosen data in one message cannot probe a secret in another through compressed sizes (RFC 7692 section 8); `SendOptions::uncompressed()` opts a message out. Inflation stops at the message budget while it runs, so a small compressed bomb costs at most `max_message`.
 - **Fail closed on randomness.** If the OS random source fails, `Connection::client` returns a connection that refuses every send and `ClientHandshake::new` one that refuses to write its request; neither falls back to a predictable value or panics. `try_client` and `try_new` report the failure up front.
@@ -257,7 +279,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo bench --bench bench
 ```
 
-[`tests/autobahn.rs`](./tests/autobahn.rs) holds the protocol cases as data; [`tests/keepalive.rs`](./tests/keepalive.rs), [`tests/backpressure.rs`](./tests/backpressure.rs), and [`tests/memory.rs`](./tests/memory.rs) the timers, the output budget, and memory per connection (with a counting allocator); [`tests/blocking.rs`](./tests/blocking.rs) and [`tests/http_net.rs`](./tests/http_net.rs) the blocking adapter over real sockets and the http-net hand-off; [`tests/attacks.rs`](./tests/attacks.rs) one test per threat (cross-site hijacking, smuggled bodies, slow heads, floods, log injection, cross-protocol bytes); [`tests/prop.rs`](./tests/prop.rs) the property tests for every invariant in [`dev/DIRECTIVES.md`](./dev/DIRECTIVES.md); [`tests/handshake.rs`](./tests/handshake.rs) and [`tests/closing.rs`](./tests/closing.rs) the two handshakes; [`tests/echo.rs`](./tests/echo.rs) a real localhost echo, including a protocol failure and an `Origin` refusal; [`tests/regressions.rs`](./tests/regressions.rs) one test per defect the pre-release review found. Every `rust` example in this README and in [`docs/API.md`](./docs/API.md) is compiled and run as a doctest.
+[`tests/autobahn.rs`](./tests/autobahn.rs) holds the protocol cases as data; [`tests/keepalive.rs`](./tests/keepalive.rs), [`tests/backpressure.rs`](./tests/backpressure.rs), and [`tests/memory.rs`](./tests/memory.rs) the timers, the output budget, and memory per connection (with a counting allocator); [`tests/blocking.rs`](./tests/blocking.rs) and [`tests/http_net.rs`](./tests/http_net.rs) the blocking adapter over real sockets and the http-net hand-off; [`tests/attacks.rs`](./tests/attacks.rs) one test per threat (cross-site hijacking, smuggled bodies, slow heads, floods, log injection, cross-protocol bytes); [`tests/prop.rs`](./tests/prop.rs) the property tests for every invariant in [`dev/DIRECTIVES.md`](./dev/DIRECTIVES.md); [`tests/handshake.rs`](./tests/handshake.rs) and [`tests/closing.rs`](./tests/closing.rs) the two handshakes; [`tests/echo.rs`](./tests/echo.rs) a real localhost echo, including a protocol failure and an `Origin` refusal; [`tests/regressions.rs`](./tests/regressions.rs) one test per defect fixed up to 0.9, and [`tests/fixes_0_10.rs`](./tests/fixes_0_10.rs) and [`tests/wipe.rs`](./tests/wipe.rs) those fixed in 0.10. Every `rust` example in this README and in [`docs/API.md`](./docs/API.md) is compiled and run as a doctest.
 
 <hr>
 <br>
@@ -268,7 +290,7 @@ cargo bench --bench bench
 - macOS (x86_64, Apple Silicon)
 - Windows (x86_64)
 
-The engine uses no operating-system facilities. With the `std` feature, a client's masking keys and handshake nonce are seeded from the standard library's OS-seeded hasher keys; without it, the caller supplies the seed.
+The engine uses no operating-system facilities. With the `std` feature, a client's masking keys and handshake nonce come from the operating system's cryptographic random source (through mod-rand: `getrandom` on Linux, `BCryptGenRandom` on Windows, the platform's equivalent elsewhere), fail closed when it is unavailable, and each key is zeroed once used; without `std`, the caller supplies a secret seed.
 
 <hr>
 <br>

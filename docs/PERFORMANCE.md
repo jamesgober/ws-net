@@ -2,8 +2,8 @@
 
 Measured numbers, how they were taken, and how to reproduce them. Every table comes from one run
 of `.github/workflows/bench.yml` on GitHub's hosted runners, so the three platforms ran the same
-commit at the same time; each section names its run. The 0.9 pass is first; the tables after it
-are the 0.6 to 0.8 record (commit `4359c49`, run 41899339504). Hosted runners are shared virtual
+commit at the same time; each section names its run. The 0.10 cost of the memory fixes is
+first, then the 0.9 pass; the tables after them are the 0.6 to 0.8 record (commit `4359c49`, run 41899339504). Hosted runners are shared virtual
 machines: compare rows within one run and one platform, never across runs. The development
 machine (shared by many builds, load near 40 on 32 cores) was too noisy to publish from.
 
@@ -22,6 +22,50 @@ machine (shared by many builds, load near 40 on 32 cores) was too noisy to publi
   in this repository.
 - Reproduce: `cargo bench --bench bench` in the crate; `cargo bench --bench compare` in `bench-compare/`;
   `python3 bench-compare/summary.py <criterion dir> [baseline]` prints the tables.
+
+## 0.10.0
+
+Run 43132250605 on commit `7135a36`: this commit against v0.9.0 built in the
+same job (`gh workflow run bench.yml -f baseline=v0.9.0`), then against
+tungstenite 0.30.0.
+
+| Benchmark | Linux x86_64 | macOS arm64 | Windows x86_64 |
+|---|---:|---:|---:|
+| `receive_100k/small_messages` | 1.38 ms (+1.2%) | 1.52 ms (-2.4%) | 3 ms (+0.2%) |
+| `receive_1mib/text_utf8` | 319 µs (+2.5%) | 592 µs (+7.8%) | 935 µs (+38.3%) |
+| `receive_1mib/binary` | 66.2 µs (+65.1%) | 95.7 µs (+87.2%) | 400 µs (+11.0%) |
+| `send_100k/server_unmasked` | 784 µs (+10.5%) | 1.42 ms (-4.8%) | 2.9 ms (+2.8%) |
+| `send_100k/client_masked_os` | 2.13 ms (+4.1%) | 3.27 ms (+0.2%) | 4.26 ms (+2.3%) |
+| `handshake/from_head_100k` | 135 ms (+1.3%) | 218 ms (-8.2%) | 293 ms (+8.8%) |
+| `keepalive/on_time_idle` | 511 µs (+0.0%) | 376 µs (-4.6%) | 987 µs (-0.0%) |
+| `flood/empty_continuations` | 9.93 ms (-3.5%) | 10.5 ms (-8.0%) | 19.1 ms (-0.8%) |
+| `broadcast/prepared_10k` | 40.3 µs (-8.4%) | 74.5 µs (+4.5%) | 106 µs (-2.8%) |
+| `mask_1mib/in_place` | 11.3 µs (-2.4%) | 19.9 µs (-0.5%) | 23.5 µs (-0.1%) |
+
+The small-message and send paths are where 0.9.0 left them. A message
+larger than `retain` (64 KiB) costs more, by design (D-081): its buffer is
+zeroed before it is freed, so `wipe` leaves no earlier copy, and it grows
+as payload arrives instead of reserving the length its header claims. For
+one 1 MiB message that is one `memset` of the message and one regrow, about
+26 µs on Linux and 40 µs on Windows and macOS. Doubling up from the first
+read, as in run 43128640648 an hour earlier, cost twice that; a claim now
+grows to eight times what arrived in one step. The Windows text row moved
+38% here and 8% in that run on code that differs only in the growth: it is
+read as the runner, not a cost, and watched in the next run. A service of
+large messages that wants neither cost sets `Limits::with_retain` to its
+message size: the buffer is kept and reused, so it is neither freed nor
+regrown.
+
+Against tungstenite in the same run (tungstenite's median over ws-net's):
+
+| Workload | Linux | macOS | Windows |
+|---|---:|---:|---:|
+| Receive 100,000 small masked messages | 2.52 | 1.96 | 2.26 |
+| Send 100,000 small messages (server) | 2.81 | 2.30 | 4.47 |
+| Send 100,000 small messages (client) | 1.46 | 1.74 | 3.73 |
+| Accept 10,000 browser upgrade requests | 1.13 | 1.14 | 1.50 |
+| Receive one 1 MiB binary message | 0.70 | 0.60 | 0.60 |
+| Receive one 1 MiB text message | 0.89 | 0.94 | 0.89 |
 
 ## 0.9.0
 
@@ -205,6 +249,8 @@ buffers pays. A server for large messages should size net-io's
 From `tests/memory.rs` (a counting allocator, every platform in CI):
 receiving and sending small messages, fragmented messages, Ping floods,
 idle keepalive ticks, prepared sends, and the Close echo allocate nothing
-once the buffers have grown; a browser handshake allocates once; an idle
+once the buffers have grown; `ServerHandshake::from_head` reads a browser
+request with one allocation (the Tier 1 `accept` makes two, adding the
+response); an idle
 connection after `release_memory` holds no heap, and its inline size is at
 most 512 bytes.

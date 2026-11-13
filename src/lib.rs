@@ -68,8 +68,9 @@
 //!
 //! What the peer sends cannot grow the connection's memory past its
 //! budgets: the input buffer holds at most 64 KiB, a reassembled message at
-//! most [`Limits::max_message`], and reassembly reserves at most 1 MiB
-//! ahead of the bytes that have arrived. An automatic Pong still waiting at
+//! most [`Limits::max_message`], and reassembly grows only as payload bytes
+//! arrive, never by the length a header claims; a message that stops
+//! arriving times out (60 s by default). An automatic Pong still waiting at
 //! the end of the output is replaced by the next one, so a peer that pings
 //! without reading cannot grow the output either. What the caller sends is
 //! the caller's to pace.

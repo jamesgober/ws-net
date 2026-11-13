@@ -63,7 +63,7 @@ fn test_http_net_sans_io_upgrade_hands_remaining_input_to_connection() {
     // The response verifies on a ws-net client with the same nonce.
     let client = ClientHandshake::with_nonce(*b"the sample nonce").with_protocols(&["rpc.v1"]);
     assert_eq!(
-        client.verify_head(&out).unwrap().map(|v| v.0),
+        client.verify_head(&out).unwrap().map(|(v, _)| v.protocol),
         Some(Some("rpc.v1"))
     );
 

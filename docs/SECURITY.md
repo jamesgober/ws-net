@@ -18,8 +18,8 @@ undefined behavior. At risk: CPU, memory, the application's session
 authority, intermediaries (proxy caches), and secrets inside messages.
 
 The crate forbids `unsafe` code (`#![forbid(unsafe_code)]`), has no
-third-party runtime dependency (parse-net and mod-rand are first party with
-no dependencies of their own), and has no reachable panic: `unwrap`,
+third-party runtime dependency (parse-net, mod-rand, and for `deflate`
+compress-lib are first party with no dependencies of their own), and has no reachable panic: `unwrap`,
 `expect`, `panic!`, and `unreachable!` are denied by the lint wall, peer
 input is read with `get` and checked slicing, the remaining fixed-size
 indexing (SHA-1, base64, frame headers) was checked by hand to stay in
@@ -39,23 +39,23 @@ Every test named `test_attack_*` is in `tests/attacks.rs`.
 | T-6 | Proxy cache poisoning by unmasked client data | a server fails on any unmasked frame (1002), no opt-out | `test_attack_unmasked_client_frame_fails_1002`, Autobahn | one branch |
 | T-7 | Predictable masking keys | keys from the OS cryptographic source in 1 KiB batches (`Connection::client`); each key is zeroed once used; no key material in `Debug` | `test_attack_masking_keys_unpredictable_across_connections` | about 1.4 ns per key |
 | T-8 | Masked frames from a server | a client fails (1002) | `test_attack_masked_server_frame_fails_1002` | one branch |
-| T-9, T-10 | Oversized frames; a header claiming a terabyte | frame and message budgets from the header, before any payload (1009); reassembly reserves at most 1 MiB ahead of arrived bytes; a message buffer never grows past its budget | `test_attack_length_lie_fails_before_payload_1009`, the budget property | two comparisons per frame |
+| T-9, T-10 | Oversized frames; a header claiming a terabyte | frame and message budgets from the header, before any payload (1009); reassembly grows only as payload arrives (at most eight times what arrived, or the input buffer), never by the claimed length; a message buffer never grows past its budget | `test_attack_length_lie_fails_before_payload_1009`, the budget property, `test_header_alone_reserves_nothing` | two comparisons per frame |
 | T-11 | 64-bit length with the high bit set; overflow | refused (1002); saturating arithmetic on every peer-derived value; 32-bit build in CI | `test_attack_length_high_bit_fails_1002`, the i686 job | none |
 | T-12 | Frame floods (millions of empty frames) | work linear in bytes, no memory per frame; counters for rate limits; the message timeout | `test_attack_frame_flood_*`, `flood/empty_continuations` | 10 to 18 ns per frame on hosted runners |
 | T-13 | Ping floods without reading | an unwritten automatic Pong is replaced by the next; `pings_in` counter | `test_attack_ping_flood_output_bounded_one_pong` | none |
 | T-14 | Unsolicited Pong floods | Pongs produce events, never output | `test_attack_pong_flood_output_stays_empty` | none |
-| T-15 | Slow messages holding a budget | `Keepalive::with_message_timeout` (1008) | `test_attack_slow_message_idle_and_close_hang_time_out` | 4 to 9 ns per tick |
+| T-15 | Slow messages holding a budget | the message timeout (1008), 60 s by default (`Keepalive::with_message_timeout`) | `test_attack_slow_message_idle_and_close_hang_time_out`, `test_stalled_message_times_out_by_default` | 4 to 9 ns per tick |
 | T-16 | Idle connections | `with_idle_timeout` (1001); `release_memory` frees all heap | the same test; `test_attack_many_idle_connections_hold_no_heap` | 0 heap when idle |
 | T-17 | Slow consumers | `Limits::with_max_output` refuses a send past the budget (`OutputFull`); 262 bytes kept for Pong and Close | `test_attack_slow_consumer_refused_at_budget_close_still_fits`, a property under random sends | one comparison per send (about 2.4 ns, `docs/PERFORMANCE.md`) |
 | T-18 | Memory per connection across many connections | inline size at most 512 bytes; idle heap 0 after `release_memory`; every buffer budgeted | `test_attack_many_idle_connections_hold_no_heap`, `tests/memory.rs`, the soak | none |
-| T-19 | Decompression bomb: a small compressed message that inflates to gigabytes (the class of CVE-2026-1526 and CVE-2026-15709) | feature `deflate` only: inflation writes into the reassembly buffer with its output capped at `max_message` while it runs (1009), never checked after; the compressed size of a message is capped too (`max_message` plus a sixty-fourth plus 1 KiB) | `test_bomb_stops_at_the_budget` (16 MiB of zeros against a 1 MiB budget, memory checked on every poll), `test_inflated_size_budget_exact_and_one_over`, `prop_inflate_within_budget`, the `deflate_message` fuzz target, `test_inflate_fed_byte_by_byte_is_linear` | one comparison per output chunk; inflation costs O(input + output) per call on compress-lib 0.7 (4 MiB fed one byte per poll in under 3 s in a debug build; 0.6.0 was quadratic, D-062) |
+| T-19 | Decompression bomb: a small compressed message that inflates to gigabytes (the class of CVE-2026-1526 and CVE-2026-15709) | feature `deflate` only: inflation writes into the reassembly buffer with its output capped at `max_message` while it runs (1009), never checked after; the compressed size of a message is capped too (`max_message` plus a sixty-fourth plus 1 KiB) | `test_bomb_stops_at_the_budget` (16 MiB of zeros against a 1 MiB budget, memory checked on every poll), `test_inflated_size_budget_exact_and_one_over`, `prop_inflate_within_budget`, the `deflate_message` fuzz target, `test_inflate_fed_byte_by_byte_is_linear` | one comparison per output chunk; inflation costs O(input + output) per call since compress-lib 0.7 (4 MiB fed one byte per poll in under 3 s in a debug build; 0.6.0 was quadratic, D-062) |
 | T-20 | Compression side channels (CRIME, BREACH style: attacker-chosen data compressed with a secret leaks it through sizes) | `deflate` is not a default feature; a server declines unless its policy has `with_deflate`; no context takeover by default in either direction, so one message cannot probe another; `SendOptions::uncompressed()` per message; nothing under 256 bytes compressed by default | `test_send_options_and_min_size`, `test_no_takeover_back_reference_into_previous_message_fails` | the compression ratio of takeover |
 | T-21 | Compression memory across many connections | engines built on first use; no window kept without takeover; `release_memory` drops engines that hold no context; window bits capped by configuration; `memory_in_use` counts them | `test_memory_released_and_wiped` | `wipe` zeroes both engines' windows (compress-lib's `wipe`) before dropping them; about 12 KiB per decompressor and 330 KiB per level-1 compressor at 15 bits while in use (compress-lib's figures) |
-| T-22 | Invalid UTF-8 passed downstream | validated once per byte, failing at the first bad byte (1007), across fragments and reads | `test_attack_invalid_utf8_fails_1007`, Autobahn section 6, the UTF-8 property | linear |
+| T-22 | Invalid UTF-8 passed downstream | validated once per byte, failing at the first bad byte (1007), across fragments and reads; compressed text as it is inflated, at fixed points (every KiB of compressed input and each frame's end) so the result does not depend on how the input was split | `test_attack_invalid_utf8_fails_1007`, Autobahn section 6, the UTF-8 property, `test_compressed_text_bad_byte_fails_in_first_fragment` | linear |
 | T-23 | Log injection through close reasons | the reason is delivered verbatim and documented as peer text | `test_attack_close_reason_control_characters_delivered_verbatim` | none |
 | T-24 | Close-handshake hangs | `with_close_timeout` (5 s default); `should_close_transport` | the timeout test | 4 to 9 ns per tick |
 | T-25 | Panics as denial of service | no panic by construction; fuzzing with small, default, and lifted budgets | `test_attack_extreme_arguments_never_panic`, all fuzz targets | none |
-| T-26 | A revoked session keeps its socket | `close(POLICY_VIOLATION, ..)` at any time, even mid-message; `wipe()` | `test_attack_revoked_session_close_1008_mid_message_then_input_ignored` | none |
+| T-26 | A revoked session keeps its socket | `close(POLICY_VIOLATION, ..)` at any time, even mid-message; `wipe()`; every buffer that held message bytes was zeroed before it was freed or regrown, so `wipe()` leaves no earlier copy | `test_attack_revoked_session_close_1008_mid_message_then_input_ignored`, `test_freed_buffers_hold_no_message_bytes` | none |
 | T-27 | Cross-protocol bytes after the upgrade | strict frame rules fail at the first bad byte (1002) | `test_attack_http_bytes_after_upgrade_fail_1002` | none |
 | T-28 | Allocator exhaustion aborting the process | `try_reserve_exact` on reassembly growth: `AllocationFailed` (1011) | `tests/memory.rs` scenario 7 with a failing allocator; `test_attack_allocation_failure_closes_1011` | one branch per growth |
 | T-29 | Information leaks through `Debug`, `Display`, or errors | no key or seed in either; errors, `Connection`, `ServerHandshake`, `ClientHandshake`, and `PreparedMessage` print no payload, query, or header value. The payload containers `Event`, `Message`, and `CloseFrame` print their payload, as their `Debug` exists to do: do not log them where the data is secret | `test_attack_debug_and_display_leak_no_payload` | none |
@@ -78,7 +78,11 @@ application, tls-net). `wipe()` zeroes buffers through
 `core::hint::black_box`, which Rust documents as best effort: it is a
 strong hint against removing the writes, not a guarantee. A guaranteed
 wipe needs volatile writes, which need `unsafe`. Secrets that need a
-guarantee belong in a key vault, not in WebSocket buffers.
+guarantee belong in a key vault, not in WebSocket buffers. Buffers are
+zeroed before they are freed or regrown, with one exception: a piece of
+compressed input that inflates to more than four times its size makes
+compress-lib grow the message buffer itself, which frees the old one as
+it is.
 
 ## Conformance
 
@@ -115,7 +119,7 @@ is below; every crash becomes a regression test before it is fixed.
 
 All ten targets, 24 hours each, at once on one shared machine (WSL,
 nightly, one libFuzzer process per target), on the code after the
-review fixes. No crash, no timeout, no out-of-memory, no artifact.
+fixes below. No crash, no timeout, no out-of-memory, no artifact.
 35.32 billion inputs in all.
 
 | Target | Inputs run | Findings |
@@ -157,11 +161,11 @@ grew, for the full 72 hours before 1.0.
 | `differential_tungstenite` | 137 million | none |
 | `deflate_message` | 118 million | none |
 
-## Review
+## Defects fixed
 
-Before 0.7.0 two independent reviews read the engine and the handshake
-against this threat model. They found twelve defects, none reachable for
-code execution or a crash (the crate forbids `unsafe`), all fixed in 0.7.0
+Before 0.7.0 the engine and the handshake were checked again against
+this threat model. Twelve defects turned up, none reachable for code
+execution or a crash (the crate forbids `unsafe`), all fixed in 0.7.0
 with a regression test each (`tests/regressions.rs`):
 
 | Area | Defect | Effect before the fix |
@@ -179,8 +183,8 @@ with a regression test each (`tests/regressions.rs`):
 | logging | `ServerHandshake`'s `Debug` printed the query; `ClientHandshake`'s printed header values | a token in a query or `Authorization` could reach logs |
 | docs | `accept` did not warn that Tier 1 accepts any `Host` | a private-address service was open to DNS rebinding by default |
 
-In 0.9 a fresh review read the whole crate again, permessage-deflate
-included. Its confirmed findings are fixed with a test each:
+In 0.9 the whole crate was checked again, permessage-deflate included.
+The defects found are fixed with a test each:
 
 | Area | Defect | Effect before the fix |
 |---|---|---|
@@ -195,6 +199,16 @@ included. Its confirmed findings are fixed with a test each:
 
 The decompressor also takes a 9-bit window when 8 was agreed, as zlib
 sends; refusing it would break interoperability for 256 bytes of window.
+
+Fixed in 0.10, with a test each (`tests/fixes_0_10.rs`, `tests/wipe.rs`,
+`tests/deflate.rs`):
+
+| Area | Defect | Effect before the fix |
+|---|---|---|
+| memory | a frame header reserved reassembly space for the length it claimed | 14 bytes per connection held up to 1 MiB that `release_memory` could not free |
+| timers | no default timer ended a message that stopped arriving | a peer held its reassembly buffer for as long as the TCP connection lived |
+| memory | buffers that held message bytes were freed or regrown unzeroed | `wipe` could not reach those copies |
+| deflate | compressed text was checked as UTF-8 only once the whole message was inflated | a bad first byte held up to `max_message` of output until the last fragment |
 
 ## Reporting a vulnerability
 

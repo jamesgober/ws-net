@@ -1,10 +1,13 @@
 # ws-net - API Reference
 
 > Complete reference for every public item in `ws-net`, with examples.
-> **Status: beta (0.9.0), design locked.** Every item of the 1.0 surface
-> is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
-> landed in, and every one is shipped and documented below. The surface is
-> frozen at `1.0.0`, after LexerSketch Studio ships on it. See
+> **Status: beta (0.10.0).** Every item of the 1.0 surface is listed in
+> [The 1.0 API](#the-10-api-design-lock) with the version it landed in,
+> and every one is shipped and documented below. 0.10 simplified the
+> client's response check: `ClientHandshake::verify` and `verify_head`
+> return a `Verified`, and `verify_full` is gone (see
+> [Migrating from 0.9](#migrating-from-09)). The surface is frozen at
+> `1.0.0`, after LexerSketch Studio ships on it. See
 > [`../dev/ROADMAP.md`](../dev/ROADMAP.md) and [`../dev/PLAN.md`](../dev/PLAN.md).
 
 <sub>Copyright &copy; 2026 <strong>James Gober</strong>.</sub>
@@ -14,6 +17,7 @@
 - [Overview](#overview)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Tier 1 at a glance](#tier-1-at-a-glance)
 - [Tier 1: `accept` and `Acceptor`](#tier-1-accept-and-acceptor)
 - [Concepts](#concepts)
   - [The I/O loop](#the-io-loop)
@@ -63,6 +67,7 @@
 - [Feature flags](#feature-flags)
 - [Limits reference](#limits-reference)
 - [The 1.0 API (design lock)](#the-10-api-design-lock)
+- [Migrating from 0.9](#migrating-from-09)
 
 ## Overview
 
@@ -103,13 +108,13 @@ async runtime, a test harness, or memory.
 
 ```toml
 [dependencies]
-ws-net = "0.9"
+ws-net = "0.10"
 
 # no_std (alloc only)
-ws-net = { version = "0.9", default-features = false }
+ws-net = { version = "0.10", default-features = false }
 
 # permessage-deflate (RFC 7692), from 0.9
-ws-net = { version = "0.9", features = ["deflate"] }
+ws-net = { version = "0.10", features = ["deflate"] }
 ```
 
 ## Quick start
@@ -135,6 +140,42 @@ let reply = match conn.poll()? {
 };
 conn.send_text(&reply)?;
 assert_eq!(conn.output(), [0x81, 0x05, b'H', b'E', b'L', b'L', b'O']);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+## Tier 1 at a glance
+
+One line each, no configuration: the defaults are the same-origin policy,
+the [limits](#limits-reference) below, and a 5 s close timeout.
+
+| To | Sans-IO | Over a `Read + Write` stream (feature `std`) |
+|---|---|---|
+| Accept an upgrade | `let accepted = ws_net::accept(&bytes)?;` (`Ok(None)` until the head is complete) | `let mut ws = blocking::accept(stream)?;` |
+| Connect | `ClientHandshake::new().write_request(host, path, &mut out)?`, then `verify_head(&response)?` | `let mut ws = blocking::connect(stream, host, path)?;` |
+| Receive a message | `conn.poll()?` (an [`Event`](#event)) | `ws.read()?` (a [`Message`](#message-and-messagekind)) |
+| Send a message | `conn.send_text("hi")?`, `conn.send_binary(&data)?` | `ws.send_text("hi")?`, `ws.send_binary(&data)?` |
+| Close | `conn.close(CloseCode::NORMAL, "")?` | `ws.close(CloseCode::NORMAL, "")?` |
+
+Sans-IO, the bytes to write are in `conn.output()`; mark them written
+with `advance_output`. Over a stream, every call writes before it
+returns.
+
+```rust
+use std::{net::{TcpListener, TcpStream}, thread};
+use ws_net::{Message, blocking};
+
+let listener = TcpListener::bind("127.0.0.1:0")?;
+let addr = listener.local_addr()?;
+let server = thread::spawn(move || -> Result<(), blocking::Error> {
+    let mut ws = blocking::accept(listener.accept()?.0)?;
+    let message = ws.read()?;
+    ws.send(&message) // echo
+});
+
+let mut ws = blocking::connect(TcpStream::connect(addr)?, &addr.to_string(), "/")?;
+ws.send_text("hello")?;
+assert_eq!(ws.read()?, Message::Text("hello".into()));
+server.join().expect("server thread")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -280,9 +321,14 @@ what this end sends is bounded too:
   against [`Limits::max_message`](#limits) before each fragment is read.
   Either violation fails with 1009. A message's buffer never grows past the
   message budget.
-- Reassembly reserves at most 1 MiB ahead of the bytes that have arrived,
-  even with the budgets lifted to `u64::MAX`: a length in a header is a
-  claim, not an allocation.
+- Reassembly grows only as payload bytes arrive (to at most eight times
+  what arrived or the input buffer, never past a final frame's end), even with the budgets lifted to `u64::MAX`: a length
+  in a header is a claim, not an allocation. A message that stops arriving
+  fails after the [message timeout](#keepalive-millis-tick) (60 s by
+  default).
+- A buffer that held message bytes is zeroed before it is freed or regrown
+  (it moves to a new allocation rather than reallocating in place), so
+  [`wipe`](#memory-and-observability) leaves no earlier copy behind.
 - A send that would take the pending output over
   [`Limits::max_output`](#limits) (32 MiB by default) is refused with
   `OutputFull` and changes nothing. Automatic Pongs and Close frames may use
@@ -296,8 +342,9 @@ what this end sends is bounded too:
   frees every empty buffer, so an idle connection holds no heap.
 
 Peak memory of a busy connection: the input buffer, plus the message being
-reassembled (at most `max_message` plus 1 MiB reserved ahead), plus the
-output (at most twice `max_output` + 262 by vector growth, plus 64 KiB of
+reassembled (at most `max_message`, and half of it more while the buffer
+regrows, until the old one is copied and zeroed), plus the output (at most
+`max_output` + 262, half of it more while it regrows, plus 64 KiB of
 written prefix before compaction). An idle connection after
 `release_memory`: `size_of::<Connection>()`, at most 512 bytes.
 `tests/memory.rs` checks each bound with a counting allocator.
@@ -379,7 +426,7 @@ Enforced on every received frame, each with its close code:
 | A length not in its shortest encoding, or a 64-bit length with the high bit set. | `InvalidLength` | 1002 |
 | A continuation with no message in progress. | `UnexpectedContinuation` | 1002 |
 | A new data frame inside a fragmented message. | `ExpectedContinuation` | 1002 |
-| Text (or a close reason) that is not UTF-8, detected at the first bad byte, across fragment boundaries. | `InvalidUtf8` | 1007 |
+| Text (or a close reason) that is not UTF-8, detected at the first bad byte, across fragment boundaries (compressed text at the next KiB of compressed input or frame end). | `InvalidUtf8` | 1007 |
 | A frame over the frame budget, or a message over the message budget. | `FrameTooLarge`, `MessageTooLarge` | 1009 |
 | A Close payload of one byte. | `InvalidClosePayload` | 1002 |
 | A Close code that may not be sent (1005, 1006, 1015, unassigned). | `InvalidCloseCode` | 1002 |
@@ -461,7 +508,7 @@ use ws_net::{Connection, WsError};
 
 let mut conn = Connection::server();
 // A masked text frame whose payload is the invalid byte 0xFF.
-let _ = conn.feed(&[0x81, 0x81, 0, 0, 0, 0, 0xFF]);
+assert_eq!(conn.feed(&[0x81, 0x81, 0, 0, 0, 0, 0xFF]), 7);
 assert_eq!(conn.poll().unwrap_err(), WsError::InvalidUtf8);
 assert_eq!(conn.output(), [0x88, 0x02, 0x03, 0xEF]); // Close 1007
 assert!(matches!(conn.poll().unwrap(), ws_net::Event::Closed));
@@ -598,7 +645,7 @@ assert_eq!(conn.next_deadline(), None);
 | `release_memory(&mut self)` | Frees every buffer that holds no pending bytes. |
 | `memory_in_use(&self) -> usize` | Heap bytes held (capacities). |
 | `stats(&self) -> Stats` | The [counters](#stats). |
-| `wipe(&mut self)` | Zeroes input, reassembly, and output buffers and the masking seed (through `black_box`: best effort, not a guarantee, as no `unsafe` is used), then fails the connection. |
+| `wipe(&mut self)` | Zeroes input, reassembly, and output buffers and the masking seed (through `black_box`: best effort, not a guarantee, as no `unsafe` is used), then fails the connection. Buffers freed or regrown earlier were zeroed first. |
 
 ```rust
 use ws_net::{Connection, Limits, WsError};
@@ -631,7 +678,7 @@ assert_eq!(conn.stats().bytes_out, 1004);
 use ws_net::{Connection, Event, MessageKind};
 
 let mut conn = Connection::server();
-let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']); // masked "hi"
+assert_eq!(conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']), 8); // masked "hi"
 let (event, mut sender) = conn.poll_split()?;
 if let Event::Text(text) = event {
     sender.send_text(text)?; // echo without copying the message
@@ -673,7 +720,7 @@ The event borrows the connection: copy out what you need before calling a
 ```rust
 use ws_net::{Connection, Event};
 let mut conn = Connection::server();
-let _ = conn.feed(&[0x88, 0x80, 0, 0, 0, 0]); // a masked, empty Close
+assert_eq!(conn.feed(&[0x88, 0x80, 0, 0, 0, 0]), 6); // a masked, empty Close
 assert!(matches!(conn.poll().unwrap(), Event::Close(None)));
 assert_eq!(conn.output(), [0x88, 0x00]); // the echo
 ```
@@ -698,7 +745,7 @@ Owned messages for the convenience APIs and the blocking adapter.
 use ws_net::{Connection, Message};
 
 let mut conn = Connection::server();
-let _ = conn.feed(&[0x82, 0x81, 0, 0, 0, 0, 7]);
+assert_eq!(conn.feed(&[0x82, 0x81, 0, 0, 0, 0, 7]), 7);
 let message = conn.poll()?.to_message().expect("a message");
 assert_eq!(message, Message::from(vec![7]));
 conn.send(&message)?;
@@ -768,7 +815,7 @@ pub enum Tick { Nothing, PingQueued }
 | `with_ping_interval(self, Duration)` | off | Queue a Ping when no frame arrived for this long. |
 | `with_idle_timeout(self, Duration)` | off | Fail with `IdleTimeout` when no byte arrived for this long. |
 | `with_close_timeout(self, Duration)` | 5 s | Fail with `CloseTimeout` when the peer does not answer our Close. |
-| `with_message_timeout(self, Duration)` | off | Fail with `MessageTimeout` when a data message stays incomplete. |
+| `with_message_timeout(self, Duration)` | 60 s | Fail with `MessageTimeout` when a data message stays incomplete (`Duration::MAX`: never). |
 | `ping_interval`, `idle_timeout`, `close_timeout`, `message_timeout` | | Accessors (`Option<Duration>`). |
 
 ```rust
@@ -803,7 +850,7 @@ rates, since a browser sends one frame per message and few Pings.
 
 ```rust
 let mut conn = ws_net::Connection::server();
-let _ = conn.feed(&[0x89, 0x80, 0, 0, 0, 0]); // masked empty Ping
+assert_eq!(conn.feed(&[0x89, 0x80, 0, 0, 0, 0]), 6); // masked empty Ping
 let _ = conn.poll();
 assert_eq!((conn.stats().frames_in, conn.stats().pings_in), (1, 1));
 ```
@@ -841,7 +888,7 @@ let limits = Limits::new().with_max_frame(1).with_max_message(4096);
 assert_eq!(limits.max_frame(), 125); // clamped
 let mut conn = Connection::server().with_limits(limits);
 // A masked binary frame announcing 200 bytes: refused from the header.
-let _ = conn.feed(&[0x82, 0xFE, 0x00, 0xC8, 1, 2, 3, 4]);
+assert_eq!(conn.feed(&[0x82, 0xFE, 0x00, 0xC8, 1, 2, 3, 4]), 8);
 assert_eq!(conn.poll().unwrap_err(), WsError::FrameTooLarge);
 
 // Accept 1 MiB frames, send 16 KiB ones.
@@ -931,7 +978,7 @@ A received Close frame's code and reason, in [`Event::Close`](#event).
 ```rust
 use ws_net::{CloseCode, Connection, Event};
 let mut client = Connection::client_with_seed([7; 32]);
-let _ = client.feed(&[0x88, 0x05, 0x03, 0xE8, b'b', b'y', b'e']);
+assert_eq!(client.feed(&[0x88, 0x05, 0x03, 0xE8, b'b', b'y', b'e']), 7);
 match client.poll().unwrap() {
     Event::Close(Some(frame)) => assert_eq!((frame.code, frame.reason), (CloseCode::NORMAL, "bye")),
     other => panic!("{other:?}"),
@@ -1238,17 +1285,19 @@ The client side: the request to send, and the check of the response.
 | `with_protocols(self, protocols: &[&str]) -> ClientHandshake` | Offers subprotocols, in preference order. |
 | `with_origin(self, origin: &str) -> ClientHandshake` | Sends an `Origin` field, as browsers do. |
 | `with_header(self, name: &str, value: &[u8]) -> ClientHandshake` | An extra request header (`Authorization`, `Cookie`), validated at write; reserved names refused. |
-| `verify_full(&self, status, headers) -> Result<Verified<'_>, HandshakeError>` | As `verify`, returning the protocol and the negotiated extensions. |
 | `connection(&self, verified: &Verified<'_>) -> Connection` (feature `std`), `connection_with_seed(&self, verified, seed: [u8; 32]) -> Connection` | The client connection for a verified response, with its extensions. `Verified::none()` builds one by hand. |
 | `key(&self) -> &str` | The `Sec-WebSocket-Key` sent. |
 | `write_request(&self, host: &str, path: &str, out: &mut Vec<u8>) -> Result<(), HandshakeError>` | Appends the request. `InvalidRequest` for an empty or non-visible-ASCII host, path, or origin, or a path without a leading `/`; `InvalidProtocol` for a non-token protocol. Nothing is written on error. |
-| `verify(&self, status: u16, headers: impl IntoIterator<Item = (&str, &[u8])>) -> Result<Option<&str>, HandshakeError>` | Checks a response an HTTP layer parsed; returns the selected subprotocol. |
-| `verify_head(&self, bytes: &[u8]) -> Result<Option<(Option<&str>, usize)>, HandshakeError>` | Checks a response from raw bytes: `Ok(None)` until the head is complete, then the selected subprotocol and the head's length. |
+| `verify(&self, status: u16, headers: impl IntoIterator<Item = (&str, &[u8])>) -> Result<Verified<'_>, HandshakeError>` | Checks a response an HTTP layer parsed; returns what was verified: the selected subprotocol and the negotiated extensions. |
+| `verify_head(&self, bytes: &[u8]) -> Result<Option<(Verified<'_>, usize)>, HandshakeError>` | Checks a response from raw bytes: `Ok(None)` until the head is complete, then what was verified and the head's length. |
+| `Verified { protocol: Option<&str>, extensions: Negotiated }` | `#[non_exhaustive]`. Pass it to `connection`. |
 
 **What is checked.** Status 101 (else `NotSwitching(status)`); `Upgrade`
 lists `websocket`; `Connection` lists `upgrade`; exactly one
 `Sec-WebSocket-Accept`, equal to the expected value (`AcceptMismatch`); no
-extension accepted (`UnexpectedExtension`); at most one
+extension accepted that was not offered (`UnexpectedExtension`), an
+accepted permessage-deflate within RFC 7692 section 7
+(`InvalidExtensions`); at most one
 `Sec-WebSocket-Protocol`, naming an offered protocol (`InvalidProtocol`).
 `verify_head` reads the head as strictly as `ServerHandshake::from_head`
 (status line `HTTP/1.1 SP 3DIGIT [SP reason]`).
@@ -1264,7 +1313,10 @@ client.write_request("server.example.com", "/chat", &mut request)?;
 let (server, _) = ServerHandshake::from_head(&request)?.expect("complete");
 let mut response = Vec::new();
 server.write_response(Some("chat"), &mut response)?;
-assert_eq!(client.verify_head(&response)?, Some((Some("chat"), response.len())));
+let (verified, len) = client.verify_head(&response)?.expect("complete");
+assert_eq!((verified.protocol, len), (Some("chat"), response.len()));
+let conn = client.connection(&verified); // with the negotiated extensions
+assert_eq!(conn.role(), ws_net::Role::Client);
 
 assert_eq!(
     client.verify_head(b"HTTP/1.1 403 Forbidden\r\n\r\n"),
@@ -1408,7 +1460,7 @@ pub struct DeflateParams {
 | `with_level(u8)`, `with_min_size(usize)` | 1, 256 | Compression level 0 to 9; messages shorter than `min_size` go uncompressed. |
 | `server_context_takeover`, `client_context_takeover`, `server_max_window_bits`, `client_max_window_bits`, `level`, `min_size` | | The configured values. |
 | `AcceptPolicy::with_deflate(DeflateConfig)` | | The server accepts the first offer, in the client's order, that the configuration can satisfy; offers with unknown, repeated, or invalid parameters are declined. A configuration asking for a client window under 15 bits declines a client that did not offer `client_max_window_bits` (the response may not limit it). |
-| `ClientHandshake::with_deflate(DeflateConfig)` | | The client offers one element: `server_no_context_takeover` unless server takeover is allowed, `client_no_context_takeover` unless its own is, `server_max_window_bits` below 15, and `client_max_window_bits`. A response that breaks RFC 7692 section 7 is `HandshakeError::InvalidExtensions`. Read it with `verify_full`, `HeadReader::client`, or the `blocking` module, which return the agreement for `connection`. |
+| `ClientHandshake::with_deflate(DeflateConfig)` | | The client offers one element: `server_no_context_takeover` unless server takeover is allowed, `client_no_context_takeover` unless its own is, `server_max_window_bits` below 15, and `client_max_window_bits`. A response that breaks RFC 7692 section 7 is `HandshakeError::InvalidExtensions`. `verify`, `verify_head`, `HeadReader::client`, and the `blocking` module return the agreement for `connection`. |
 | `Negotiated::deflate(&self) -> Option<&DeflateParams>` | | The agreement. |
 | `PreparedMessage::with_deflate(self, &DeflateConfig)` | | A broadcast compressed once (see [`PreparedMessage`](#preparedmessage)). |
 
@@ -1460,7 +1512,7 @@ let update = r#"{"jsonrpc":"2.0","method":"tick","params":[1,2,3]}"#.repeat(10);
 server.send_text(&update)?;
 assert_eq!(server.output()[0], 0xC1); // FIN, RSV1, text
 let wire = server.output().to_vec();
-let _ = conn.feed(&wire);
+assert_eq!(conn.feed(&wire), wire.len());
 assert!(matches!(conn.poll()?, ws_net::Event::Text(t) if t == update));
 # }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -1655,7 +1707,7 @@ allocator, no dependencies of its own), `mod-rand` (feature `std`), and
 | Capacity kept per buffer | 64 KiB default | [`Limits`](#limits) |
 | Close timeout | 5 s default | [`Keepalive`](#keepalive-millis-tick) |
 | Extension offers, parameters per offer | 16, 16 | [`extension`](#the-extension-module) |
-| Reassembly reserved ahead of arrived bytes | 1 MiB | [Budgets and memory](#budgets-and-memory) |
+| Reassembly reserved ahead of arrived bytes | none: it grows as bytes arrive | [Budgets and memory](#budgets-and-memory) |
 | Handshake head | 16 KiB | [`ServerHandshake::MAX_HEAD`](#serverhandshake) |
 | Offered subprotocols | 64 | [`ServerHandshake`](#serverhandshake) |
 
@@ -1701,7 +1753,8 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | `AcceptPolicy::with_deflate` (feature `deflate`) | 0.9 |
 | `ClientHandshake`: `new`, `with_nonce`, `with_protocols`, `with_origin`, `key`, `write_request`, `verify`, `verify_head` | 0.2 |
 | `ClientHandshake::try_new` | 0.3 |
-| `ClientHandshake::with_header`, `verify_full` | 0.4 |
+| `ClientHandshake::with_header` | 0.4 |
+| `ClientHandshake::verify` and `verify_head` return `Verified` (`verify_full`, 0.4, folded into `verify`) | 0.10 |
 | `ClientHandshake::connection`, `connection_with_seed`; `Verified::none`; `Connection::with_extensions`, `negotiated` | 0.5 |
 | `ClientHandshake::with_deflate` (feature `deflate`) | 0.9 |
 | `HandshakeError` 0.2 variants, `status`, `write_response`; `UnexpectedBody`, `OriginRefused`, `ProtocolRequired`, `RandomUnavailable` | 0.2, 0.3 |
@@ -1719,3 +1772,45 @@ item ids are those of [`../dev/PLAN.md`](../dev/PLAN.md).
 | permessage-deflate (feature `deflate`): `DeflateConfig`, `DeflateParams`, `PreparedMessage::with_deflate`, `compressed_len`, `Negotiated::deflate` | 0.9 (back from 1.1 once compress-lib was published; `dev/PLAN.md` D-056) |
 | `VERSION` | 0.3 |
 | After 1.0: shared-segment output, a public extension trait, RFC 8441 (`ExtendedConnect`), connection state export | 1.x |
+
+## Migrating from 0.9
+
+One change to the API, on the client: the response check returns
+everything it verified, so the negotiated extensions can no longer be
+dropped on the way to the connection.
+
+| 0.9 | 0.10 |
+|---|---|
+| `client.verify(status, headers)? -> Option<&str>` | `client.verify(status, headers)?.protocol` |
+| `client.verify_full(status, headers)?` | `client.verify(status, headers)?` |
+| `client.verify_head(bytes)? -> Option<(Option<&str>, usize)>` | `client.verify_head(bytes)? -> Option<(Verified, usize)>`; the protocol is `.0.protocol` |
+
+```rust
+use ws_net::ClientHandshake;
+
+let client = ClientHandshake::with_nonce(*b"the sample nonce");
+let response = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
+    Connection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
+// 0.9: let (protocol, len) = client.verify_head(response)?.expect("complete");
+let (verified, len) = client.verify_head(response)?.expect("complete");
+assert_eq!((verified.protocol, len), (None, response.len()));
+let conn = client.connection(&verified);
+# let _ = conn;
+# Ok::<(), ws_net::HandshakeError>(())
+```
+
+One change of default: [`Keepalive::new`](#keepalive-millis-tick) times a
+data message out after 60 s (`MessageTimeout`, Close 1008), where 0.9 had
+no message timeout. It is measured on the caller's clock, so it applies
+only where `on_time` is called (the `blocking` adapter calls it around
+each read). A service that receives messages taking longer than that,
+such as large uploads on slow links, raises it:
+
+```rust
+use core::time::Duration;
+use ws_net::{Connection, Keepalive};
+
+let conn = Connection::server()
+    .with_keepalive(Keepalive::new().with_message_timeout(Duration::from_secs(600)));
+# let _ = conn;
+```

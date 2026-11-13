@@ -40,7 +40,7 @@ run_one() {
             -artifact_prefix="$HOME_DIR/artifacts/$t/" >> "$log" 2>&1
         status=$?
         [ "$status" -eq 0 ] && break
-        if grep -q "timeout after 18446744073709551615 seconds\|Unit for -1 seconds" "$log"; then
+        if grep -q "timeout after 1844674407370955[0-9]* seconds\|Unit for -[0-9]* seconds" "$log"; then
             for a in "$HOME_DIR/artifacts/$t"/timeout-*; do
                 [ -e "$a" ] || continue
                 if timeout 120 "$BIN/$t" "$a" >/dev/null 2>&1; then
@@ -48,8 +48,8 @@ run_one() {
                     rm -f "$a"
                 fi
             done
-            # Keep the log readable for the next stop.
-            sed -i 's/timeout after 18446744073709551615 seconds/clock step (replayed)/; s/Unit for -1 seconds/clock step unit/' "$log"
+            # Mark the step as replayed.
+            sed -i 's/timeout after 1844674407370955[0-9]* seconds/clock step (replayed)/; s/Unit for -[0-9]* seconds/clock step unit/' "$log"
             continue
         fi
         echo "STOPPED with status $status" >> "$log"

@@ -824,7 +824,12 @@ impl<'s> Iterator for ResponseFields<'s> {
 /// let (server, _) = ServerHandshake::from_head(&request)?.expect("complete");
 /// let mut response = Vec::new();
 /// server.write_response(None, &mut response)?;
-/// assert_eq!(client.verify_head(&response)?, Some((None, response.len())));
+/// let (verified, len) = client.verify_head(&response)?.expect("complete");
+/// assert_eq!((verified.protocol, len), (None, response.len()));
+/// // The client connection, with the negotiated extensions (a seed from a
+/// // cryptographic source; `connection` draws one from the OS, feature `std`).
+/// let conn = client.connection_with_seed(&verified, [7; 32]);
+/// assert_eq!(conn.role(), ws_net::Role::Client);
 /// # Ok::<(), ws_net::HandshakeError>(())
 /// ```
 #[derive(Clone, PartialEq, Eq)]
@@ -917,10 +922,9 @@ impl ClientHandshake {
     }
 
     /// Offers permessage-deflate with `config`'s parameters (feature
-    /// `deflate`). Read the response with [`verify_full`](Self::verify_full),
-    /// [`HeadReader::client`], or the `blocking` module, which return what
-    /// was agreed for `connection`: `verify` and
-    /// `verify_head` check the agreement but return only the subprotocol.
+    /// `deflate`). [`verify`](Self::verify), [`verify_head`](Self::verify_head),
+    /// [`HeadReader::client`], and the `blocking` module return what was
+    /// agreed; pass it to [`connection`](Self::connection).
     ///
     /// # Examples
     ///
@@ -1144,49 +1148,13 @@ impl ClientHandshake {
         crate::Connection::client_with_seed(seed).with_extensions(verified.extensions)
     }
 
-    /// Checks the server's response as [`verify`](Self::verify) does, and
-    /// returns everything verified: the selected subprotocol and the
-    /// negotiated extensions (permessage-deflate when it was offered with
-    /// `with_deflate` (feature `deflate`) and accepted).
-    ///
-    /// # Errors
-    ///
-    /// As [`verify`](Self::verify).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ws_net::ClientHandshake;
-    ///
-    /// let client = ClientHandshake::with_nonce(*b"the sample nonce").with_protocols(&["chat"]);
-    /// let fields = [
-    ///     ("Upgrade", &b"websocket"[..]), ("Connection", b"Upgrade"),
-    ///     ("Sec-WebSocket-Accept", b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), ("Sec-WebSocket-Protocol", b"chat"),
-    /// ];
-    /// let verified = client.verify_full(101, fields)?;
-    /// assert_eq!(verified.protocol, Some("chat"));
-    /// assert!(verified.extensions.is_empty());
-    /// # Ok::<(), ws_net::HandshakeError>(())
-    /// ```
-    pub fn verify_full<'h, I>(
-        &self,
-        status: u16,
-        headers: I,
-    ) -> Result<Verified<'_>, HandshakeError>
-    where
-        I: IntoIterator<Item = (&'h str, &'h [u8])>,
-    {
-        let (protocol, extensions) = self.verify_parts(status, headers)?;
-        Ok(Verified {
-            protocol,
-            extensions,
-        })
-    }
-
     /// Checks the server's response (RFC 6455 section 4.1, the client's
     /// side) from its status and header fields, as an HTTP layer parsed
-    /// them, and returns the subprotocol it selected, if any. With
-    /// `http-net`: `client.verify(resp.status(), resp.headers())`.
+    /// them, and returns what was verified: the subprotocol the server
+    /// selected and the negotiated extensions (permessage-deflate when it
+    /// was offered with `with_deflate`, feature `deflate`, and accepted).
+    /// Pass it to [`connection`](Self::connection). With `http-net`:
+    /// `client.verify(resp.status(), resp.headers())`.
     ///
     /// # Errors
     ///
@@ -1211,13 +1179,26 @@ impl ClientHandshake {
     ///            ("Sec-WebSocket-Accept", b"AAAAAAAAAAAAAAAAAAAAAAAAAAA=")];
     /// assert_eq!(client.verify(101, bad), Err(HandshakeError::AcceptMismatch));
     /// assert_eq!(client.verify(403, []), Err(HandshakeError::NotSwitching(403)));
+    ///
+    /// let client = ClientHandshake::with_nonce(*b"the sample nonce").with_protocols(&["chat"]);
+    /// let good = [
+    ///     ("Upgrade", &b"websocket"[..]), ("Connection", b"Upgrade"),
+    ///     ("Sec-WebSocket-Accept", b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), ("Sec-WebSocket-Protocol", b"chat"),
+    /// ];
+    /// let verified = client.verify(101, good)?;
+    /// assert_eq!(verified.protocol, Some("chat"));
+    /// assert!(verified.extensions.is_empty());
+    /// # Ok::<(), HandshakeError>(())
     /// ```
-    pub fn verify<'h, I>(&self, status: u16, headers: I) -> Result<Option<&str>, HandshakeError>
+    pub fn verify<'h, I>(&self, status: u16, headers: I) -> Result<Verified<'_>, HandshakeError>
     where
         I: IntoIterator<Item = (&'h str, &'h [u8])>,
     {
-        self.verify_parts(status, headers)
-            .map(|(protocol, _)| protocol)
+        let (protocol, extensions) = self.verify_parts(status, headers)?;
+        Ok(Verified {
+            protocol,
+            extensions,
+        })
     }
 
     fn verify_parts<'h, I>(
@@ -1321,8 +1302,8 @@ impl ClientHandshake {
 
     /// Checks the server's response from its raw head bytes, for use
     /// without an HTTP layer: `Ok(None)` until the blank line ending the
-    /// head has arrived, then the selected subprotocol and the head's
-    /// length in bytes. Bytes after the head are the connection's first
+    /// head has arrived, then what was verified (as
+    /// [`verify`](Self::verify)) and the head's length in bytes. Bytes after the head are the connection's first
     /// frames. The head is read as strictly as
     /// [`ServerHandshake::from_head`] reads a request (status line
     /// `HTTP/1.1 SP 3DIGIT [SP reason]`), within
@@ -1339,13 +1320,13 @@ impl ClientHandshake {
     pub fn verify_head(
         &self,
         bytes: &[u8],
-    ) -> Result<Option<(Option<&str>, usize)>, HandshakeError> {
+    ) -> Result<Option<(Verified<'_>, usize)>, HandshakeError> {
         let Some(head) = head::split(bytes)? else {
             return Ok(None);
         };
         let status = head::status_line(head.first).ok_or(HandshakeError::MalformedHead)?;
-        let selected = self.verify(status, head.fields())?;
-        Ok(Some((selected, head.len)))
+        let verified = self.verify(status, head.fields())?;
+        Ok(Some((verified, head.len)))
     }
 }
 
@@ -1393,7 +1374,8 @@ impl fmt::Debug for ClientHandshake {
 pub struct Verified<'a> {
     /// The subprotocol the server selected, one the client offered.
     pub protocol: Option<&'a str>,
-    /// The extensions in force (none in this version).
+    /// The negotiated extensions: permessage-deflate when it was offered
+    /// and accepted (feature `deflate`), otherwise none.
     pub extensions: Negotiated,
 }
 
@@ -1528,7 +1510,7 @@ impl HeadReader {
                 return Ok(None);
             };
             let status = head::status_line(head.first).ok_or(HandshakeError::MalformedHead)?;
-            let verified = handshake.verify_full(status, head.fields())?;
+            let verified = handshake.verify(status, head.fields())?;
             Ok(Some((verified, head.len)))
         })();
         if let Err(e) = r {
@@ -1741,7 +1723,10 @@ mod tests {
             ("Sec-WebSocket-Accept", b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
             ("Sec-WebSocket-Protocol", b"chat"),
         ];
-        assert_eq!(client.verify(101, good), Ok(Some("chat")));
+        assert_eq!(
+            client.verify(101, good).map(|v| v.protocol),
+            Ok(Some("chat"))
+        );
         let mut ext = good.to_vec();
         ext.push(("Sec-WebSocket-Extensions", b"permessage-deflate"));
         assert_eq!(
@@ -1750,7 +1735,10 @@ mod tests {
         );
         let mut empty_ext = good.to_vec();
         empty_ext.push(("Sec-WebSocket-Extensions", b" , "));
-        assert_eq!(client.verify(101, empty_ext), Ok(Some("chat")));
+        assert_eq!(
+            client.verify(101, empty_ext).map(|v| v.protocol),
+            Ok(Some("chat"))
+        );
         // A value that is not a list is refused, not read as empty.
         let mut broken_ext = good.to_vec();
         broken_ext.push(("Sec-WebSocket-Extensions", b"\"x"));

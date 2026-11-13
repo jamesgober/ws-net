@@ -76,7 +76,7 @@ impl Add<Duration> for Millis {
 /// use core::time::Duration;
 /// use ws_net::Keepalive;
 ///
-/// // LexerSketch Studio: a Ping every 30 s, give up after 75 s of silence.
+/// // The editor tool: a Ping every 30 s, give up after 75 s of silence.
 /// let k = Keepalive::new()
 ///     .with_ping_interval(Duration::from_secs(30))
 ///     .with_idle_timeout(Duration::from_secs(75));

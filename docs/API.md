@@ -4,7 +4,7 @@
 > **Status: beta (0.9.0), design locked.** Every item of the 1.0 surface
 > is listed in [The 1.0 API](#the-10-api-design-lock) with the version it
 > landed in, and every one is shipped and documented below. The surface is
-> frozen at `1.0.0`, after LexerSketch Studio ships on it. See
+> frozen at `1.0.0`, after the editor tool ships on it. See
 > [`../dev/ROADMAP.md`](../dev/ROADMAP.md) and [`../dev/PLAN.md`](../dev/PLAN.md).
 
 <sub>Copyright &copy; 2026 <strong>James Gober</strong>.</sub>
@@ -822,7 +822,7 @@ them.
 
 | Method | Description |
 |---|---|
-| `Limits::new() -> Limits` / `Limits::default()` | 1 MiB frames, 16 MiB messages (LexerSketch Studio's budgets). |
+| `Limits::new() -> Limits` / `Limits::default()` | 1 MiB frames, 16 MiB messages (the editor tool's budgets). |
 | `with_max_frame(self, bytes: u64) -> Limits` | The largest frame payload; at least 125 (the largest control frame). |
 | `with_max_message(self, bytes: u64) -> Limits` | The largest message, summed over its fragments. |
 | `max_frame(&self) -> u64` | The frame budget. |

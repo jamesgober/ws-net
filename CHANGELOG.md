@@ -33,6 +33,9 @@
 - compress-lib 1.0.0 for feature `deflate`, its stable release (the
   `message` API unchanged since 0.7, no breaking change before its 2.0);
   no source change. The `deflate_message` 72-hour run starts again on it.
+- Tested on compress-lib 1.1.0, which `compress-lib = "1"` resolves to:
+  smaller output at levels 4 to 9, and a compressor that stays within its
+  built memory. No source change.
 - The 24-hour socket soak on net-io's reactor (Linux, 500 clients, net-io
   0.7.0) passed: 3.70 billion messages, heap flat (131 MiB in the first
   hour, 128 MiB in the last), no connect retried.

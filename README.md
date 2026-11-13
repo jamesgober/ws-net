@@ -21,7 +21,7 @@
         <strong>ws-net</strong> implements the WebSocket protocol (RFC 6455) without doing I/O: the opening handshake, frame parsing and serialization, masking, fragmentation and reassembly, ping/pong, and the closing handshake. Bytes from your socket go in, messages come out; messages you send become bytes you write. The same engine runs over <code>std::net</code>, an async runtime, or a test harness in memory.
     </p>
     <p>
-        Every rule of the protocol is enforced, and every violation closes the connection with the right status code: masking direction, reserved bits and opcodes, control-frame size and fragmentation, minimal length encoding, fragment order, and UTF-8 validity of text, checked incrementally so a bad byte fails the connection the moment it arrives. Every size is bounded, checked from frame headers before any payload is read, so input from a hostile peer cannot grow memory past the budgets. The handshake works over raw request bytes on its own, or behind an HTTP layer such as <code>http-net</code>, and hands the server what its policy needs: the target, <code>Host</code>, <code>Origin</code>, and offered subprotocols. It is the WebSocket layer of LexerSketch Studio.
+        Every rule of the protocol is enforced, and every violation closes the connection with the right status code: masking direction, reserved bits and opcodes, control-frame size and fragmentation, minimal length encoding, fragment order, and UTF-8 validity of text, checked incrementally so a bad byte fails the connection the moment it arrives. Every size is bounded, checked from frame headers before any payload is read, so input from a hostile peer cannot grow memory past the budgets. The handshake works over raw request bytes on its own, or behind an HTTP layer such as <code>http-net</code>, and hands the server what its policy needs: the target, <code>Host</code>, <code>Origin</code>, and offered subprotocols. It is the WebSocket layer of an editor tool, its first consumer.
     </p>
     <br>
     <hr>
@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>no_std</code>-compatible (needs only <code>alloc</code>), <code>#![forbid(unsafe_code)]</code>, no dependencies: SHA-1 and base64 for the handshake are implemented in the crate.
     </p>
     <blockquote>
-        <strong>Status: pre-1.0.</strong> The public API is designed across the 0.x series and frozen at <code>1.0.0</code>, after LexerSketch Studio ships on it. See <a href="./docs/API.md"><code>docs/API.md</code></a> and <a href="./CHANGELOG.md"><code>CHANGELOG.md</code></a>.
+        <strong>Status: pre-1.0.</strong> The public API is designed across the 0.x series and frozen at <code>1.0.0</code>, after the editor tool ships on it. See <a href="./docs/API.md"><code>docs/API.md</code></a> and <a href="./CHANGELOG.md"><code>CHANGELOG.md</code></a>.
     </blockquote>
 </div>
 

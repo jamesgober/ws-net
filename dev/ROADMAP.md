@@ -95,7 +95,7 @@ Exit: Autobahn strict pass, fuzz 24 hours clean, soak 4 hours, every threat test
 - [x] End-to-end benchmark over net-io's driver (moved from 0.7): `interop/net-io/examples/e2e.rs`, ws-net on net-io's reactor and blocking pool against tungstenite 0.30.0 on `std::net`, the same client for all, in the hosted benchmark workflow. Payloads to 64 KiB since net-io 0.6.1, with the output-budget sizing (`docs/PERFORMANCE.md`).
 - [x] `interop/net-io/`: ws-net as a net-io `Session` on both drivers, end to end over loopback (every length class, 48 clients at once, Pings, the close order, a 403 refusal, a vanished peer, net-io's idle timeout as Close 1001), run in CI on three platforms.
 - [x] Socket-level soak with net-io (`interop/net-io/tests/soak.rs`): net-io 0.6.1 fixed the output-buffer leak (D-044); 4 hours per driver on Linux with 500 clients each. The Windows run waits for net-io 0.6.2 (listen backlog, D-055).
-- **Moved to 0.9 (reason: a consumer can only run on a published release, D-055):** real consumers end to end: LexerSketch Studio with keepalive; serve-net's WebSocket upgrade route; a gateway consumer using the policy, counters, wipe, and close-on-revocation contract.
+- **Moved to 0.9 (reason: a consumer can only run on a published release, D-055):** real consumers end to end: the editor tool with keepalive; serve-net's WebSocket upgrade route; a gateway consumer using the policy, counters, wipe, and close-on-revocation contract.
 - [x] `docs/ARCHITECTURE.md`, `docs/PLATFORM-NOTES.md`.
 - [x] Abuse ratios from `Stats` (spec section 10.3): `Stats::data_frames_in`, fragments and Pings per message; `frames_in` counts a split control frame once (D-050).
 - [x] End-to-end results in `docs/PERFORMANCE.md` (hosted run, three platforms).
@@ -103,7 +103,7 @@ Exit: Autobahn strict pass, fuzz 24 hours clean, soak 4 hours, every threat test
 Exit: two consumers end to end with no open P0 or P1 defect; API changes from feedback recorded in the decision log. (Met by the integrations above for the release; the consumer runs themselves are 0.9's first item.)
 
 ## v0.9.0 - Beta
-- [x] Consumers end to end (moved from 0.8): serve-net's upgrade route (22 WebSocket tests) and the Studio build and pass unchanged on the 0.9 API; no API change came from them (D-069). **Moved to the 1.0 audit (reason: no gateway exists to run yet):** the gateway consumer, an open row of `docs/STABILITY-1.0.md`.
+- [x] Consumers end to end (moved from 0.8): serve-net's upgrade route (22 WebSocket tests) and the editor tool build and pass unchanged on the 0.9 API; no API change came from them (D-069). **Moved to the 1.0 audit (reason: no gateway exists to run yet):** the gateway consumer, an open row of `docs/STABILITY-1.0.md`.
 - [x] The Windows socket soak on net-io 0.6.2: 4 hours per driver, 500 clients, both clean; the clients try again a connect the host loses (D-066, D-068).
 - [x] API review: every public item in `docs/API.md` and its 1.0 table, every rustdoc example runnable (the `blocking` ones over loopback), `docs/API.md` final for 0.9.
 - [ ] Fuzzing 72 hours per target; soak 24 hours. The Linux blocking pool passed 24 hours; the reactor is repeated on net-io 0.7.0 (7 connections stalled on 0.6.1, D-068). **Moved to 0.9.x (reason: a host restart cut the fuzz runs short after 32 hours clean, and the reactor fix is net-io's, D-071):** both close before any release candidate.
@@ -126,4 +126,4 @@ Exit: two consumers end to end with no open P0 or P1 defect; API changes from fe
 
 ## v1.0.0 - Stable
 - [ ] Full audit recorded in `docs/STABILITY-1.0.md` (API, docs, tests, benchmarks, security).
-- [ ] Frozen after Studio ships on it (D18). 1.0 needs the owner's explicit go.
+- [ ] Frozen after the editor tool ships on it (D18). 1.0 needs the owner's explicit go.

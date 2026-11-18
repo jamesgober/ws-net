@@ -22,7 +22,7 @@ polish exit (`dev/ROADMAP.md`). 1.0 itself needs the owner's explicit go.
 | Soak, sockets | on net-io, 500 clients: Linux 4 hours per driver (0.8), both drivers 24 hours (the blocking pool in 0.9, the reactor on net-io 0.7.0 in 0.9.x, 3.70 billion messages, heap flat); Windows 4 hours per driver (0.9) | `interop/net-io/tests/soak.rs`, D-068, D-077 |
 | Platforms | Linux, macOS, Windows on stable and 1.85; `no_std`; 32-bit; big-endian under Miri | CI |
 | Integration | http-net (sans-IO and blocking hand-off), net-io (both drivers), tls-net, end to end in CI | `docs/INTEGRATION.md` |
-| Consumers | serve-net's upgrade route and LexerSketch Studio build and pass on the 0.9 API unchanged | D-069 |
+| Consumers | serve-net's upgrade route and the editor tool build and pass on the 0.9 API unchanged | D-069 |
 | API | every public item in `docs/API.md`; every rustdoc example runs | `docs/API.md` |
 | Performance | against tungstenite 0.30.0 (its latest) and 0.8.0 on hosted runners, three platforms, each shortfall named with its cause; every accepted gap revisited | `docs/PERFORMANCE.md`, D-070 |
 
@@ -30,9 +30,9 @@ polish exit (`dev/ROADMAP.md`). 1.0 itself needs the owner's explicit go.
 
 | Item | What closes it |
 |---|---|
-| A gateway consumer | a gateway using the policy, counters, `wipe`, and close on revocation runs end to end (serve-net and the Studio already pass on 0.9 unchanged, D-069) |
+| A gateway consumer | a gateway using the policy, counters, `wipe`, and close on revocation runs end to end (serve-net and the editor tool already pass on 0.9 unchanged, D-069) |
 | Release candidates | two weeks of release candidates with no API change |
-| Freeze | after the Studio ships on ws-net (D18) |
+| Freeze | after the editor tool ships on ws-net (D18) |
 
 ## Accepted shortfalls
 

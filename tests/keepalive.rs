@@ -15,7 +15,7 @@ fn secs(s: u64) -> Duration {
     Duration::from_secs(s)
 }
 
-fn studio() -> Keepalive {
+fn editor_tool() -> Keepalive {
     Keepalive::new()
         .with_ping_interval(secs(30))
         .with_idle_timeout(secs(75))
@@ -32,14 +32,14 @@ fn test_keepalive_unset_no_deadlines() {
     let mut conn = Connection::server();
     assert_eq!(conn.on_time(Millis(1_000_000)), Ok(Tick::Nothing));
     assert_eq!(conn.next_deadline(), None);
-    let conn = Connection::server().with_keepalive(studio());
+    let conn = Connection::server().with_keepalive(editor_tool());
     // No tick yet: the timers have no start.
     assert_eq!(conn.next_deadline(), None);
 }
 
 #[test]
 fn test_keepalive_ping_carries_tick_and_is_sent_once() {
-    let mut conn = Connection::server().with_keepalive(studio());
+    let mut conn = Connection::server().with_keepalive(editor_tool());
     assert_eq!(conn.on_time(Millis(5)), Ok(Tick::Nothing));
     assert_eq!(conn.next_deadline(), Some(Millis(30_005)));
     assert_eq!(conn.on_time(Millis(30_004)), Ok(Tick::Nothing));
@@ -56,7 +56,7 @@ fn test_keepalive_ping_carries_tick_and_is_sent_once() {
 
 #[test]
 fn test_keepalive_input_resets_idle_and_ping() {
-    let mut conn = Connection::server().with_keepalive(studio());
+    let mut conn = Connection::server().with_keepalive(editor_tool());
     let _ = conn.on_time(Millis(0));
     let _ = conn.feed(&client_frame(0xA, true, b""));
     assert!(matches!(conn.poll(), Ok(Event::Pong(_))));

@@ -7,7 +7,7 @@
 > client's response check: `ClientHandshake::verify` and `verify_head`
 > return a `Verified`, and `verify_full` is gone (see
 > [Migrating from 0.9](#migrating-from-09)). The surface is frozen at
-> `1.0.0`, after LexerSketch Studio ships on it. See
+> `1.0.0`, after the editor tool ships on it. See
 > [`../dev/ROADMAP.md`](../dev/ROADMAP.md) and [`../dev/PLAN.md`](../dev/PLAN.md).
 
 <sub>Copyright &copy; 2026 <strong>James Gober</strong>.</sub>
@@ -869,7 +869,7 @@ them.
 
 | Method | Description |
 |---|---|
-| `Limits::new() -> Limits` / `Limits::default()` | 1 MiB frames, 16 MiB messages (LexerSketch Studio's budgets). |
+| `Limits::new() -> Limits` / `Limits::default()` | 1 MiB frames, 16 MiB messages (the editor tool's budgets). |
 | `with_max_frame(self, bytes: u64) -> Limits` | The largest frame payload; at least 125 (the largest control frame). |
 | `with_max_message(self, bytes: u64) -> Limits` | The largest message, summed over its fragments. |
 | `max_frame(&self) -> u64` | The frame budget. |

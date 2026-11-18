@@ -14,8 +14,8 @@
 /// The incoming budgets are checked from frame headers, before the payload
 /// is read: a frame over the frame budget, or one that would take its
 /// message over the message budget, fails the connection with close code
-/// 1009. The frame and message defaults are the budgets of LexerSketch
-/// Studio. A send that would take the pending output over its budget is
+/// 1009. The frame and message defaults are the budgets of an editor tool,
+/// the first consumer. A send that would take the pending output over its budget is
 /// refused with [`WsError::OutputFull`](crate::WsError::OutputFull), and
 /// changes nothing.
 ///

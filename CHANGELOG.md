@@ -11,6 +11,17 @@
 
 ## [Unreleased]
 
+---
+
+## [0.10.0] - 2026-11-18
+
+The last polish before release candidates. One breaking change: a
+client's response check now returns the negotiated extensions with the
+protocol. Reassembly memory comes only from bytes that arrived, freed
+buffers are zeroed, and a stalled message times out after 60 s by
+default. All eleven fuzz targets ran their full 72 hours on this code,
+clean.
+
 ### Changed
 
 - **Breaking:** `ClientHandshake::verify` returns a `Verified` (the
@@ -587,7 +598,8 @@ Initial scaffold and repository bootstrap. No domain logic yet: this release est
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/jamesgober/ws-net/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/jamesgober/ws-net/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jamesgober/ws-net/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamesgober/ws-net/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/ws-net/compare/v0.6.0...v0.7.0

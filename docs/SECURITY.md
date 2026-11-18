@@ -161,6 +161,29 @@ grew, for the full 72 hours before 1.0.
 | `differential_tungstenite` | 137 million | none |
 | `deflate_message` | 118 million | none |
 
+### 0.10.0: 2026-11-12 to 2026-11-16
+
+The full 72 hours (NFR-14) on every target, on the final 0.10.0 code.
+`deflate_message` ran on compress-lib 1.1.0, the version a 0.10.0 build
+resolves to, from 2026-11-13 to 2026-11-16; the other ten from 2026-11-12
+to 2026-11-15. No crash, no timeout, no out-of-memory, no leak, no
+artifact. One WSL clock step on `frame_header` was replayed and passed.
+170.70 billion inputs in all.
+
+| Target | Inputs run | Findings |
+|---|---:|---|
+| `frame_header` | 60.44 billion | none |
+| `extension_parse` | 27.59 billion | none |
+| `handshake_key` | 26.09 billion | none |
+| `origin_policy` | 22.27 billion | none |
+| `server_head` | 15.19 billion | none |
+| `client_head` | 7.74 billion | none |
+| `connection_server` | 3.70 billion | none |
+| `deflate_message` | 2.47 billion | none |
+| `differential_tungstenite` | 1.85 billion | none |
+| `connection_api` | 1.69 billion | none |
+| `connection_client` | 1.68 billion | none |
+
 ## Defects fixed
 
 Before 0.7.0 the engine and the handshake were checked again against

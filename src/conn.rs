@@ -24,10 +24,6 @@ const INPUT_MIN: usize = 4096;
 const WAITING_MAX: usize = 131;
 /// Output already written beyond this is compacted away eagerly.
 const OUT_COMPACT: usize = 64 * 1024;
-/// The most reassembly space reserved ahead of the bytes that have arrived.
-/// A header announces a length but proves nothing; with the budgets lifted,
-/// reserving what it announces would let 14 bytes request terabytes.
-const RESERVE_CAP: u64 = 1024 * 1024;
 /// The first header byte's RSV1 bit: permessage-deflate's "compressed".
 const RSV1: u8 = 0x40;
 /// Output allowed above `max_output` for an automatic Pong and a Close, at
@@ -85,7 +81,7 @@ pub enum State {
 ///
 /// let mut conn = Connection::server();
 /// // A masked "hi" text frame from a client.
-/// let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']);
+/// assert_eq!(conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']), 8);
 /// assert!(matches!(conn.poll().unwrap(), Event::Text("hi")));
 /// assert!(matches!(conn.poll().unwrap(), Event::NeedInput));
 /// ```
@@ -120,7 +116,7 @@ impl Event<'_> {
     /// use ws_net::{Connection, Message};
     ///
     /// let mut conn = Connection::server();
-    /// let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']);
+    /// assert_eq!(conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']), 8);
     /// assert_eq!(conn.poll()?.to_message(), Some(Message::from("hi")));
     /// assert_eq!(conn.poll()?.to_message(), None); // NeedInput
     /// # Ok::<(), ws_net::WsError>(())
@@ -233,6 +229,8 @@ impl Reader {
             } else if len < cap {
                 let grown = len.saturating_mul(2).clamp(INPUT_MIN.min(cap), cap);
                 // budget: input_buffer
+                move_to(&mut self.input, Vec::with_capacity(grown));
+                // budget: input_buffer: within the capacity just allocated
                 self.input.resize(grown, 0);
             }
         }
@@ -301,14 +299,15 @@ impl Reader {
     }
 
     /// Ends a text message's reassembly: its allocation goes back to `msg`
-    /// for reuse.
+    /// for reuse (the smaller of the two is zeroed and freed).
     fn reclaim_text(&mut self) {
         if self.text.capacity() > 0 {
             let mut bytes = core::mem::take(&mut self.text).into_bytes();
-            bytes.clear();
             if bytes.capacity() > self.msg.capacity() {
-                self.msg = bytes;
+                core::mem::swap(&mut bytes, &mut self.msg);
             }
+            wipe_vec(&mut bytes);
+            self.msg.clear();
         }
         self.carry_len = 0;
     }
@@ -322,12 +321,39 @@ impl Reader {
 /// Zeroes all of `v`'s allocation, spare capacity included (bytes a
 /// compaction or a `clear` left behind), then empties it.
 pub(crate) fn wipe_vec(v: &mut Vec<u8>) {
-    v.iter_mut().for_each(|b| *b = 0);
-    let spare = v.capacity() - v.len();
+    // Both writes compile to `memset`: this runs on every free of a buffer
+    // that held message bytes, so a byte loop would cost as much as the
+    // message's copy.
+    v.fill(0);
+    let cap = v.capacity();
     // budget: capacity: zeroes the spare capacity, never grows
-    v.extend(core::iter::repeat_n(0, spare));
+    v.resize(cap, 0);
     let _ = black_box(&mut *v);
     v.clear();
+}
+
+/// Moves `v`'s bytes into `fresh`, which the caller allocated with room for
+/// them, and zeroes `v`'s allocation before it is freed. Every buffer that
+/// holds message bytes regrows through here (a `Vec` growing by itself
+/// would free its old allocation as it is), so no earlier copy of a
+/// message outlives [`Connection::wipe`].
+pub(crate) fn move_to(v: &mut Vec<u8>, mut fresh: Vec<u8>) {
+    // budget: capacity: the caller made `fresh` hold at least `v.len()`
+    fresh.extend_from_slice(v);
+    wipe_vec(v);
+    *v = fresh;
+}
+
+/// Zeroes `v`'s allocation, then frees it.
+pub(crate) fn free_vec(v: &mut Vec<u8>) {
+    wipe_vec(v);
+    *v = Vec::new();
+}
+
+/// [`free_vec`] for a `String`.
+fn free_text(text: &mut String) {
+    let mut bytes = core::mem::take(text).into_bytes();
+    wipe_vec(&mut bytes);
 }
 
 /// The length of the UTF-8 sequence that `lead` starts, or 0 when `lead`
@@ -573,6 +599,7 @@ impl Writer {
         let frames = message.frames_for(codec.and_then(Codec::prepared_bits));
         self.check_data_room(frames.len())?;
         self.pong_at = None;
+        self.make_room(frames.len());
         // budget: max_output: `check_data_room` above
         self.out.extend_from_slice(frames);
         self.messages_out = self.messages_out.saturating_add(1);
@@ -635,9 +662,9 @@ impl Writer {
             n += 4;
         }
         // One capacity check for the whole frame, not one per append.
+        self.make_room(n + len);
         // budget: max_output: every caller checked the frame against it,
         // plus `CONTROL_HEADROOM` for the automatic Pong and Close.
-        self.out.reserve(n + len);
         self.out.extend_from_slice(header.get(..n).unwrap_or(&[]));
         let start = self.out.len();
         self.out.extend_from_slice(payload);
@@ -647,6 +674,28 @@ impl Writer {
             }
         }
         Ok(())
+    }
+
+    /// Makes room for `n` more output bytes, doubling as `Vec` does, through
+    /// [`move_to`] so the old allocation is zeroed before it is freed. Once
+    /// the next doubling would pass the budget (with the headroom and the
+    /// bytes already written) it goes straight there, so the old buffer,
+    /// held until it is copied and zeroed, is at most half of it.
+    fn make_room(&mut self, n: usize) {
+        if self.out.capacity() - self.out.len() < n {
+            let wanted = self.out.len().saturating_add(n);
+            let limit = usize::try_from(self.max_output.saturating_add(CONTROL_HEADROOM))
+                .unwrap_or(usize::MAX)
+                .saturating_add(self.out_pos);
+            let mut target = self.out.capacity().saturating_mul(2).max(wanted);
+            if target.saturating_mul(2) > limit {
+                target = limit;
+            }
+            let target = target.max(wanted);
+            // budget: max_output: every caller checked what it adds against
+            // it, plus `CONTROL_HEADROOM` for the automatic Pong and Close.
+            move_to(&mut self.out, Vec::with_capacity(target));
+        }
     }
 
     /// Queues the automatic Pong for a received Ping.
@@ -730,7 +779,8 @@ impl Writer {
 /// Every RFC 6455 rule is enforced: masking direction, reserved bits and
 /// opcodes, control-frame size and fragmentation, minimal length encoding,
 /// fragmentation order, UTF-8 validity of text (checked incrementally, so a
-/// bad byte fails the connection as soon as it arrives), and close codes.
+/// bad byte fails the connection as soon as it arrives; compressed text at
+/// the next KiB of compressed input or frame end), and close codes.
 /// A violation fails the connection with the matching close code (see
 /// [`WsError::close_code`]).
 ///
@@ -753,7 +803,7 @@ impl Writer {
 /// let wire = client.output().to_vec();
 /// client.advance_output(wire.len());
 ///
-/// let _ = server.feed(&wire);
+/// assert_eq!(server.feed(&wire), wire.len());
 /// match server.poll().unwrap() {
 ///     Event::Text(text) => assert_eq!(text, "hello"),
 ///     other => panic!("{other:?}"),
@@ -924,7 +974,7 @@ impl Connection {
     ///
     /// let mut conn = Connection::server().with_limits(Limits::new().with_max_frame(128));
     /// // A masked binary frame announcing 200 bytes.
-    /// let _ = conn.feed(&[0x82, 0xFE, 0x00, 0xC8, 1, 2, 3, 4]);
+    /// assert_eq!(conn.feed(&[0x82, 0xFE, 0x00, 0xC8, 1, 2, 3, 4]), 8);
     /// assert_eq!(conn.poll().unwrap_err(), WsError::FrameTooLarge);
     /// ```
     #[must_use]
@@ -1043,7 +1093,8 @@ impl Connection {
 
     /// Copies as much of `bytes` into the input buffer as fits (at most
     /// [`Limits::input_buffer`] bytes are buffered) and returns how many
-    /// were taken. Poll, then feed the rest.
+    /// were taken. Poll, then feed the rest: bytes past the count are not
+    /// buffered, and dropping them loses them.
     ///
     /// # Examples
     ///
@@ -1052,8 +1103,34 @@ impl Connection {
     /// assert_eq!(conn.feed(&[0x81]), 1);
     /// ```
     ///
-    /// At most [`Limits::input_buffer`] bytes are buffered; a leftover
-    /// larger than that is fed in a loop with polls between.
+    /// A read of any size, fed in a loop with polls between:
+    ///
+    /// ```
+    /// use ws_net::{Connection, Event};
+    ///
+    /// // Two masked messages, 70 KiB in one read: more than the input
+    /// // buffer (64 KiB) takes at once.
+    /// let mut read = vec![0x82, 0xFF, 0, 0, 0, 0, 0, 1, 0x18, 0, 0, 0, 0, 0];
+    /// read.resize(read.len() + 70 * 1024, 7); // 70 KiB of payload
+    /// read.extend_from_slice(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']);
+    ///
+    /// let mut conn = Connection::server();
+    /// let mut messages = 0;
+    /// let mut rest = &read[..];
+    /// while !rest.is_empty() {
+    ///     let n = conn.feed(rest);
+    ///     rest = &rest[n..];
+    ///     loop {
+    ///         match conn.poll()? {
+    ///             Event::Text(_) | Event::Binary(_) => messages += 1,
+    ///             Event::NeedInput => break,
+    ///             _ => {}
+    ///         }
+    ///     }
+    /// }
+    /// assert_eq!(messages, 2);
+    /// # Ok::<(), ws_net::WsError>(())
+    /// ```
     #[must_use = "bytes beyond the returned count were not taken"]
     pub fn feed(&mut self, mut bytes: &[u8]) -> usize {
         let mut taken = 0;
@@ -1143,7 +1220,7 @@ impl Connection {
     ///
     /// let mut conn = Connection::server();
     /// // Masked text frame whose payload is the invalid byte 0xFF.
-    /// let _ = conn.feed(&[0x81, 0x81, 0, 0, 0, 0, 0xFF]);
+    /// assert_eq!(conn.feed(&[0x81, 0x81, 0, 0, 0, 0, 0xFF]), 7);
     /// assert_eq!(conn.poll().unwrap_err(), WsError::InvalidUtf8);
     /// // The Close frame with code 1007 is ready to send.
     /// assert_eq!(conn.output(), [0x88, 0x02, 0x03, 0xEF]);
@@ -1171,7 +1248,7 @@ impl Connection {
     /// use ws_net::{Connection, Event};
     ///
     /// let mut conn = Connection::server();
-    /// let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']); // masked "hi"
+    /// assert_eq!(conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']), 8); // masked "hi"
     /// let (event, mut sender) = conn.poll_split()?;
     /// if let Event::Text(text) = event {
     ///     sender.send_text(text)?; // no copy of the message needed
@@ -1199,53 +1276,111 @@ impl Connection {
     }
 }
 
-/// Makes room for `need` more bytes in a reassembly buffer, doubling as
-/// usual but never past the message budget (the budget was checked against
-/// the header, so `len + need` fits it), so a message's buffer holds at
-/// most `max_message` bytes.
-fn grow(msg: &mut Vec<u8>, need: usize, max_message: u64) -> Result<(), WsError> {
+/// What a frame still claims after the bytes being added: `ahead` more
+/// payload bytes, and whether it is the message's final frame; `floor` is
+/// the input buffer's size, room a claim may take before more has arrived.
+#[derive(Clone, Copy)]
+pub(crate) struct Claim {
+    pub(crate) ahead: usize,
+    pub(crate) last: bool,
+    pub(crate) floor: usize,
+}
+
+impl Claim {
+    /// No claim: growth by doubling alone.
+    #[cfg(feature = "deflate")]
+    pub(crate) const NONE: Self = Self {
+        ahead: 0,
+        last: false,
+        floor: 0,
+    };
+}
+
+/// How far ahead of the bytes that arrived a claim may reserve: eight
+/// times them (or the input buffer, when more). A 1 MiB frame then regrows
+/// once, from 64 KiB, instead of doubling up from the first read.
+const AHEAD_FACTOR: usize = 8;
+
+/// Makes room for `need` more bytes in a reassembly buffer (see [`room`]).
+pub(crate) fn grow(
+    msg: &mut Vec<u8>,
+    need: usize,
+    max_message: u64,
+    claim: Claim,
+) -> Result<(), WsError> {
     let len = msg.len();
     if msg.capacity() - len >= need {
         return Ok(());
     }
-    let budget = usize::try_from(max_message).unwrap_or(usize::MAX);
-    let wanted = len.saturating_add(need);
-    let target = msg
-        .capacity()
-        .saturating_mul(2)
-        .max(wanted)
-        .min(budget.max(wanted));
-    // Allocation failure fails the connection (1011) instead of aborting
-    // the process; a smaller exact request is tried first.
-    // budget: max_message
-    if msg.try_reserve_exact(target - len).is_err() {
-        msg.try_reserve_exact(need)
-            .map_err(|_| WsError::AllocationFailed)?;
-    }
+    let fresh = room(msg.capacity(), len, need, max_message, claim)?;
+    move_to(msg, fresh);
     Ok(())
 }
 
 /// [`grow`] for a text message's `String`.
-fn grow_text(text: &mut String, need: usize, max_message: u64) -> Result<(), WsError> {
+fn grow_text(
+    text: &mut String,
+    need: usize,
+    max_message: u64,
+    claim: Claim,
+) -> Result<(), WsError> {
     let len = text.len();
     if text.capacity() - len >= need {
         return Ok(());
     }
+    // The new allocation is empty, so the conversion checks nothing.
+    let mut fresh = String::from_utf8(room(text.capacity(), len, need, max_message, claim)?)
+        .unwrap_or_default();
+    // budget: capacity: `room` made it hold at least `text.len()`
+    fresh.push_str(text);
+    free_text(text);
+    *text = fresh;
+    Ok(())
+}
+
+/// A new, empty reassembly allocation for a buffer of `capacity` holding
+/// `len` bytes that needs `need` more. It doubles, and toward what the
+/// frame claims it grows to [`AHEAD_FACTOR`] times what will have arrived,
+/// or the input buffer's size when that is more: the buffer stays a
+/// multiple of the bytes the peer sent, never the claim alone (a header
+/// with no payload reserves nothing). It never passes the end
+/// of a final frame, nor the message budget (the budget was checked against
+/// the header, so `len + need` fits it), so a message's buffer holds at
+/// most `max_message` bytes. Once the next doubling would pass the budget
+/// it goes straight there, so the old buffer, held until it is copied and
+/// zeroed, is at most half the budget. Allocation failure fails the
+/// connection (1011) instead of aborting the process; the exact size is
+/// tried before giving up.
+fn room(
+    capacity: usize,
+    len: usize,
+    need: usize,
+    max_message: u64,
+    claim: Claim,
+) -> Result<Vec<u8>, WsError> {
     let budget = usize::try_from(max_message).unwrap_or(usize::MAX);
     let wanted = len.saturating_add(need);
-    let target = text
-        .capacity()
-        .saturating_mul(2)
-        .max(wanted)
-        .min(budget.max(wanted));
-    // Allocation failure fails the connection (1011) instead of aborting
-    // the process; a smaller exact request is tried first.
+    let claimed = wanted.saturating_add(claim.ahead);
+    let ahead = wanted
+        .saturating_mul(AHEAD_FACTOR)
+        .max(claim.floor)
+        .min(claimed);
+    let mut target = capacity.saturating_mul(2).max(ahead);
+    if target.saturating_mul(2) > budget {
+        target = budget;
+    }
+    if claim.last {
+        target = target.min(claimed);
+    }
+    let target = target.max(wanted);
+    let mut fresh = Vec::new();
     // budget: max_message
-    if text.try_reserve_exact(target - len).is_err() {
-        text.try_reserve_exact(need)
+    if fresh.try_reserve_exact(target).is_err() {
+        fresh
+            .try_reserve_exact(wanted)
             .map_err(|_| WsError::AllocationFailed)?;
     }
-    Ok(())
+    Ok(fresh)
 }
 
 /// The receive state machine, over the two halves so that a [`Sender`] can
@@ -1261,7 +1396,7 @@ fn poll_inner<'r>(
         reader.delivered = false;
         reader.reclaim_text();
         if reader.msg.capacity() > limits.retain() {
-            reader.msg = Vec::new();
+            free_vec(&mut reader.msg);
         } else {
             reader.msg.clear();
         }
@@ -1301,15 +1436,23 @@ fn poll_inner<'r>(
                     if let (true, Some(c)) = (inflating, codec.as_deref_mut()) {
                         let chunk = reader.input.get(start..start + n).unwrap_or(&[]);
                         let max = limits.max_message();
-                        if let Err(e) = c.inflate(chunk, complete, &mut reader.msg, max) {
+                        // Text is checked as it is inflated (see
+                        // `Codec::inflate`), and whole in `inflated`.
+                        let text = f.kind == Kind::Text;
+                        let ends = (f.remaining == 0, complete);
+                        if let Err(e) = c.inflate(chunk, ends, &mut reader.msg, max, text) {
                             return Err(writer.fail(e));
                         }
                     } else {
                         match f.kind {
                             Kind::Binary => {
-                                if let Err(e) =
-                                    grow(&mut reader.msg, chunk.len(), limits.max_message())
-                                {
+                                let claim = Claim {
+                                    ahead: usize::try_from(f.remaining).unwrap_or(usize::MAX),
+                                    last: f.fin,
+                                    floor: limits.input_buffer(),
+                                };
+                                let max = limits.max_message();
+                                if let Err(e) = grow(&mut reader.msg, chunk.len(), max, claim) {
                                     return Err(writer.fail(e));
                                 }
                                 // budget: max_message: `grow` made the room first
@@ -1317,7 +1460,13 @@ fn poll_inner<'r>(
                             }
                             Kind::Text => {
                                 let need = chunk.len() + usize::from(reader.carry_len);
-                                let grown = grow_text(&mut reader.text, need, limits.max_message());
+                                let claim = Claim {
+                                    ahead: usize::try_from(f.remaining).unwrap_or(usize::MAX),
+                                    last: f.fin,
+                                    floor: limits.input_buffer(),
+                                };
+                                let max = limits.max_message();
+                                let grown = grow_text(&mut reader.text, need, max, claim);
                                 if let Err(e) = grown {
                                     return Err(writer.fail(e));
                                 }
@@ -1474,7 +1623,10 @@ fn poll_inner<'r>(
                 if let Some(c) = codec.as_deref_mut() {
                     let payload = reader.input.get(start..end).unwrap_or(&[]);
                     let max = limits.max_message();
-                    if let Err(e) = c.inflate(payload, true, &mut reader.msg, max) {
+                    // Checked at the same points as a streamed message, so
+                    // the result does not depend on how the input arrived.
+                    let text = kind == Kind::Text;
+                    if let Err(e) = c.inflate(payload, (true, true), &mut reader.msg, max, text) {
                         return Err(writer.fail(e));
                     }
                     c.end_message();
@@ -1520,23 +1672,10 @@ fn poll_inner<'r>(
                 reader.text.clear();
             }
             reader.message = Some(kind);
-            // Reserving the frame up front saves growing the buffer piece by
-            // piece, but only up to RESERVE_CAP: the length is the peer's
-            // claim, and the budgets may have been lifted.
-            // An inflated message grows as it is inflated instead.
-            let ahead = if inflating {
-                0
-            } else {
-                header.payload_len.min(RESERVE_CAP)
-            };
-            let ahead = usize::try_from(ahead).unwrap_or(0);
-            let grown = match kind {
-                Kind::Binary => grow(&mut reader.msg, ahead, limits.max_message()),
-                Kind::Text => grow_text(&mut reader.text, ahead, limits.max_message()),
-            };
-            if let Err(e) = grown {
-                return Err(writer.fail(e));
-            }
+            // Nothing is reserved for the announced length: it is the
+            // peer's claim, so 14 bytes of header could hold a frame budget
+            // of memory. The buffer grows as payload bytes arrive, to at
+            // most eight times what arrived (see `room`).
             let streaming = Streaming {
                 kind,
                 fin: header.fin,
@@ -1553,9 +1692,9 @@ fn poll_inner<'r>(
 }
 
 /// The event for an inflated message in the reassembly buffer. Text is
-/// validated here, once, whole (see `Codec::inflate` for why not in
-/// pieces); the message is counted and lent (for `detach_message`) only
-/// once it is valid.
+/// validated whole here, as the `&str` the event lends (the pieces before
+/// the last were checked as they were inflated); the message is counted and
+/// lent (for `detach_message`) only once it is valid.
 fn inflated<'r>(
     reader: &'r mut Reader,
     kind: Kind,
@@ -1811,7 +1950,7 @@ impl Connection {
         }
         if w.out_pos == w.out.len() {
             if w.out.capacity() > self.limits.retain() {
-                w.out = Vec::new();
+                free_vec(&mut w.out);
             } else {
                 w.out.clear();
             }
@@ -2021,7 +2160,7 @@ impl Connection {
     ///
     /// let mut server = Connection::server();
     /// server.close(CloseCode::NORMAL, "")?;
-    /// let _ = server.feed(&[0x88, 0x82, 0, 0, 0, 0, 0x03, 0xE8]); // the client's echo
+    /// assert_eq!(server.feed(&[0x88, 0x82, 0, 0, 0, 0, 0x03, 0xE8]), 8); // the client's echo
     /// let _ = server.poll()?;
     /// assert!(!server.should_close_transport()); // our Close is not written yet
     /// let n = server.output().len();
@@ -2082,21 +2221,21 @@ impl Connection {
     pub fn release_memory(&mut self) {
         let r = &mut self.reader;
         if r.pos == r.filled {
-            r.input = Vec::new();
+            free_vec(&mut r.input);
             r.pos = 0;
             r.filled = 0;
             r.lent = None;
         }
         if !r.in_message() {
-            r.msg = Vec::new();
-            r.text = String::new();
+            free_vec(&mut r.msg);
+            free_text(&mut r.text);
             r.carry_len = 0;
             r.delivered = false;
             r.lent = None;
         }
         let w = &mut self.writer;
         if w.out_pos == w.out.len() {
-            w.out = Vec::new();
+            free_vec(&mut w.out);
             w.out_pos = 0;
             w.pong_at = None;
         }
@@ -2116,7 +2255,7 @@ impl Connection {
     /// ```
     /// let mut conn = ws_net::Connection::server();
     /// assert_eq!(conn.memory_in_use(), 0); // nothing allocated until used
-    /// let _ = conn.feed(&[0x89, 0x80, 0, 0, 0, 0]);
+    /// assert_eq!(conn.feed(&[0x89, 0x80, 0, 0, 0, 0]), 6);
     /// assert!(conn.memory_in_use() > 0);
     /// ```
     #[must_use]
@@ -2132,7 +2271,11 @@ impl Connection {
     /// Overwrites with zeros every buffered byte (input, reassembly,
     /// output, a pending Pong) and the masking-key seed, then fails the
     /// connection ([`State::Closed`], nothing more sent): for ejecting a
-    /// connection whose messages may carry secrets.
+    /// connection whose messages may carry secrets. Buffers the connection
+    /// freed or regrew earlier were zeroed first, so no earlier copy is
+    /// left behind (except where compress-lib grew a buffer itself, for a
+    /// piece of compressed input inflating to more than four times its
+    /// size).
     ///
     /// The writes go through [`core::hint::black_box`] so they are not
     /// removed as dead stores. Rust documents `black_box` as best effort,
@@ -2145,7 +2288,7 @@ impl Connection {
     /// use ws_net::{Connection, Event, State};
     ///
     /// let mut conn = Connection::server();
-    /// let _ = conn.feed(&[0x82, 0x83, 0, 0, 0, 0, 7, 7, 7]); // masked binary
+    /// assert_eq!(conn.feed(&[0x82, 0x83, 0, 0, 0, 0, 7, 7, 7]), 9); // masked binary
     /// assert!(matches!(conn.poll(), Ok(Event::Binary(_))));
     /// conn.wipe();
     /// assert_eq!(conn.state(), State::Closed);
@@ -2208,7 +2351,7 @@ impl Connection {
     /// use ws_net::{Connection, Event, MessageKind};
     ///
     /// let mut conn = Connection::server();
-    /// let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']); // masked "hi"
+    /// assert_eq!(conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']), 8); // masked "hi"
     /// assert!(matches!(conn.poll()?, Event::Text(_)));
     /// let mut owned = Vec::new();
     /// assert_eq!(conn.detach_message(&mut owned), Some(MessageKind::Text));
@@ -2338,7 +2481,7 @@ impl Sender<'_> {
     /// use ws_net::{Connection, Event};
     ///
     /// let mut conn = Connection::server();
-    /// let _ = conn.feed(&[0x82, 0x81, 0, 0, 0, 0, 9]); // masked binary [9]
+    /// assert_eq!(conn.feed(&[0x82, 0x81, 0, 0, 0, 0, 9]), 7); // masked binary [9]
     /// let (event, mut sender) = conn.poll_split()?;
     /// if let Event::Binary(data) = event {
     ///     sender.send_binary(data)?;
@@ -2429,7 +2572,7 @@ impl Sender<'_> {
     /// use ws_net::{Connection, Event, SendOptions};
     ///
     /// let mut conn = Connection::server();
-    /// let _ = conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']); // masked "hi"
+    /// assert_eq!(conn.feed(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i']), 8); // masked "hi"
     /// let (event, mut sender) = conn.poll_split()?;
     /// if let Event::Text(text) = event {
     ///     sender.send_text_with(text, SendOptions::uncompressed())?;
@@ -2534,12 +2677,12 @@ mod tests {
     fn test_receive_streamed_and_fast_path_same_events() {
         let frame = masked(0x1, true, "κόσμε".as_bytes());
         let mut whole = Connection::server();
-        let _ = whole.feed(&frame);
+        assert_eq!(whole.feed(&frame), frame.len());
         assert!(matches!(whole.poll().unwrap(), Event::Text("κόσμε")));
         let mut bytewise = Connection::server();
         let mut got = None;
         for b in &frame {
-            let _ = bytewise.feed(core::slice::from_ref(b));
+            assert_eq!(bytewise.feed(core::slice::from_ref(b)), 1);
             if let Event::Text(t) = bytewise.poll().unwrap() {
                 got = Some(alloc::string::String::from(t));
             }
@@ -2554,7 +2697,7 @@ mod tests {
         wire.extend(masked(0x0, false, b""));
         wire.extend(masked(0x0, true, b""));
         wire.extend(masked(0x2, true, b""));
-        let _ = conn.feed(&wire);
+        assert_eq!(conn.feed(&wire), wire.len());
         assert!(matches!(conn.poll().unwrap(), Event::Text("")));
         assert!(matches!(conn.poll().unwrap(), Event::Binary(b"")));
         assert!(matches!(conn.poll().unwrap(), Event::NeedInput));
@@ -2628,7 +2771,7 @@ mod tests {
         let mut conn = Connection::server();
         let mut wire = masked(0x9, true, b"one");
         wire.extend(masked(0x9, true, b"two"));
-        let _ = conn.feed(&wire);
+        assert_eq!(conn.feed(&wire), wire.len());
         assert!(matches!(conn.poll().unwrap(), Event::Ping(b"one")));
         assert!(matches!(conn.poll().unwrap(), Event::Ping(b"two")));
         assert_eq!(conn.output(), [0x8A, 0x03, b't', b'w', b'o']);

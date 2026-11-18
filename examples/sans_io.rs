@@ -61,10 +61,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut response = Vec::new();
     server_hs.write_response(Some("jsonrpc"), &mut response)?;
     print!("{}", String::from_utf8_lossy(&response));
-    let (protocol, _) = client_hs
+    let (verified, _) = client_hs
         .verify_head(&response)?
         .ok_or("incomplete response")?;
-    println!("handshake ok, subprotocol {protocol:?}\n");
+    println!("handshake ok, subprotocol {:?}\n", verified.protocol);
 
     let mut client = Connection::client();
     let mut server = Connection::server();

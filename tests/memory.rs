@@ -120,7 +120,8 @@ fn drive(conn: &mut Connection, wire: &[u8]) -> usize {
 #[test]
 fn test_memory_per_connection_matches_formula() {
     // 1. Reassembly: a 4 MiB message in 64 KiB frames. Peak is the input
-    //    buffer plus at most the message budget.
+    //    buffer plus at most the message budget, and half of it more while
+    //    the buffer regrows: the old one is held until copied and zeroed.
     let limits = Limits::new().with_max_message(4 << 20);
     let mut wire = Vec::new();
     let piece = vec![b'a'; 64 * 1024];
@@ -137,7 +138,8 @@ fn test_memory_per_connection_matches_formula() {
     assert_eq!(drive(&mut conn, &wire), 1);
     let peak = peak_since(base);
     let bound = limits.input_buffer() + (4 << 20);
-    assert!(peak <= bound, "reassembly peak {peak} > {bound}");
+    let regrow = bound + (2 << 20);
+    assert!(peak <= regrow, "reassembly peak {peak} > {regrow}");
     assert!(conn.memory_in_use() <= bound);
     drop(conn);
 

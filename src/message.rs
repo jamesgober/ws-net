@@ -105,7 +105,7 @@ pub enum MessageKind {
 ///
 /// ```
 /// let mut conn = ws_net::Connection::server();
-/// let _ = conn.feed(&[0x89, 0x80, 0, 0, 0, 0]); // a masked empty Ping
+/// assert_eq!(conn.feed(&[0x89, 0x80, 0, 0, 0, 0]), 6); // a masked empty Ping
 /// let _ = conn.poll();
 /// let stats = conn.stats();
 /// assert_eq!((stats.bytes_in, stats.frames_in, stats.pings_in), (6, 1, 1));

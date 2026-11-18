@@ -153,7 +153,7 @@ fn connect(
     let (selected, rest) = read_head(&mut stream, |buf| {
         Ok(handshake
             .verify_head(buf)?
-            .map(|(p, n)| (p.map(str::to_string), n)))
+            .map(|(v, n)| (v.protocol.map(str::to_string), n)))
     })
     .unwrap();
     let mut conn = Connection::client();

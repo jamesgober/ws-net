@@ -210,8 +210,8 @@ fn test_client_handshake_raw_heads_round_trip() {
         .write_response(Some("superchat"), &mut response)
         .unwrap();
     response.extend_from_slice(&[0x81, 0x00]); // first frame right behind
-    let (selected, head_len) = client.verify_head(&response).unwrap().unwrap();
-    assert_eq!(selected, Some("superchat"));
+    let (verified, head_len) = client.verify_head(&response).unwrap().unwrap();
+    assert_eq!(verified.protocol, Some("superchat"));
     assert_eq!(&response[head_len..], [0x81, 0x00]);
     for cut in 0..head_len {
         assert_eq!(client.verify_head(&response[..cut]), Ok(None));
@@ -289,7 +289,10 @@ proptest! {
         let (server, _) = ServerHandshake::from_head(&request).unwrap().unwrap();
         let mut response = Vec::new();
         server.write_response(None, &mut response).unwrap();
-        prop_assert_eq!(client.verify_head(&response), Ok(Some((None, response.len()))));
+        prop_assert_eq!(
+            client.verify_head(&response),
+            Ok(Some((ws_net::Verified::none(), response.len())))
+        );
     }
 }
 
@@ -339,7 +342,7 @@ fn test_server_extensions_malformed_refused_400() {
 }
 
 #[test]
-fn test_client_verify_full_unoffered_extension_refused() {
+fn test_client_verify_unoffered_extension_refused() {
     let client = ws_net::ClientHandshake::with_nonce(*b"the sample nonce");
     let fields: [(&str, &[u8]); 4] = [
         ("Upgrade", b"websocket"),
@@ -348,7 +351,7 @@ fn test_client_verify_full_unoffered_extension_refused() {
         ("Sec-WebSocket-Extensions", b"permessage-deflate"),
     ];
     assert_eq!(
-        client.verify_full(101, fields),
+        client.verify(101, fields),
         Err(ws_net::HandshakeError::UnexpectedExtension)
     );
 }

@@ -179,7 +179,8 @@ rules:
 - **Revocation.** When a session ends, `close(CloseCode::POLICY_VIOLATION,
   "session ended")`, stop delivering messages, flush, and drop the transport
   after the close timeout. On eject, `wipe()` zeroes input, reassembly, and
-  output buffers and the masking seed, and fails the connection.
+  output buffers and the masking seed, and fails the connection. Buffers
+  freed or regrown earlier were zeroed first.
 - **Broadcast.** `PreparedMessage` encodes a server message once;
   `send_prepared` appends it to each connection with one copy, under each
   connection's own output budget.
@@ -199,7 +200,7 @@ message from the peer fails the connection with 1002.
 - **Server, blocking http-net.** The decision is made in the request
   handler and the socket arrives in `on_upgrade`: carry `decision.extensions`
   (a `Copy` value) from one to the other and build the connection with it.
-- **Client.** `verify_full`, `HeadReader::client`, and
+- **Client.** `verify`, `verify_head`, `HeadReader::client`, and
   `blocking::connect_with` return the agreement; `connection` uses it.
 
 What it costs and what to set:
@@ -240,14 +241,15 @@ ways, and this close order, checked step by step. CI runs it on Linux.
 | Buffer | Bound | Released |
 |---|---|---|
 | input | `Limits::input_buffer` (64 KiB default; 256 B to 1 MiB) | `release_memory` (kept between reads otherwise) |
-| reassembly | the message received so far, never above `max_message`, plus up to 1 MiB reserved ahead of arrived bytes | after delivery when larger than `retain`; `release_memory` |
-| output | `max_output` + 262 bytes for automatic Pong and Close; capacity up to twice that (vector growth) plus 64 KiB of written prefix before compaction | when drained and larger than `retain`; `release_memory` |
+| reassembly | the message received so far, never above `max_message`; grows as bytes arrive (at most eight times what arrived, or the input buffer), and while it regrows also holds the old buffer, at most half the budget, until it is copied and zeroed | after delivery when larger than `retain`; `release_memory` |
+| output | `max_output` + 262 bytes for automatic Pong and Close plus 64 KiB of written prefix before compaction; while it regrows, also the old buffer (at most half of that) until it is copied and zeroed | when drained and larger than `retain`; `release_memory` |
 | compression (feature `deflate`) | compressor about 330 KiB at 15 bits (about 30 KiB at 9), decompressor about 12 KiB plus the window with client takeover | `release_memory` for each one without takeover; `wipe` |
 | inline | `size_of::<Connection>()`, at most 512 bytes (tested) | never |
 
 `tests/memory.rs` measures each scenario with a counting allocator: a 4 MiB
-reassembled message peaks at the input buffer plus the message budget; a
-slow consumer peaks at twice its output budget plus 64 KiB; an idle
+reassembled message peaks at the input buffer plus one and a half times
+the message budget (the old buffer is held while it is copied and zeroed);
+a slow consumer peaks at twice its output budget plus 64 KiB; an idle
 connection after `release_memory` holds no heap; receiving and sending small
 messages allocates nothing once the buffers have grown.
 
